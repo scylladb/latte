@@ -1,7 +1,9 @@
 use base64::{engine::general_purpose as base64_engine, Engine as _};
 use std::fmt;
-use std::io::Cursor;
+use std::io;
+use std::time::Duration;
 
+use hdrhistogram::serialization::interval_log::{IntervalLogWriter, Tag};
 use hdrhistogram::serialization::{Serializer, V2DeflateSerializer};
 use hdrhistogram::Histogram;
 use serde::de::{Error, Visitor};
@@ -42,7 +44,7 @@ impl Visitor<'_> for HistogramVisitor {
         let decoded = base64_engine::STANDARD
             .decode(v)
             .map_err(|e| E::custom(format!("Not a valid base64 value. {e}")))?;
-        let mut cursor = Cursor::new(&decoded);
+        let mut cursor = io::Cursor::new(&decoded);
         let mut deserializer = hdrhistogram::serialization::Deserializer::new();
         Ok(SerializableHistogram(
             deserializer
@@ -58,5 +60,37 @@ impl<'de> Deserialize<'de> for SerializableHistogram {
         D: Deserializer<'de>,
     {
         deserializer.deserialize_str(HistogramVisitor)
+    }
+}
+
+pub trait HistogramWriter {
+    fn write_histogram(
+        &mut self,
+        histogram: &Histogram<u64>,
+        interval_start_time: Duration,
+        interval_duration: Duration,
+        tag: Tag,
+    ) -> io::Result<()>;
+}
+
+impl<W, S> HistogramWriter for IntervalLogWriter<'_, '_, W, S>
+where
+    W: io::Write + Send + Sync + 'static,
+    S: hdrhistogram::serialization::Serializer + 'static,
+{
+    fn write_histogram(
+        &mut self,
+        histogram: &Histogram<u64>,
+        interval_start_time: Duration,
+        interval_duration: Duration,
+        tag: Tag,
+    ) -> io::Result<()> {
+        self.write_histogram(histogram, interval_start_time, interval_duration, Some(tag))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Serialization error: {:?}", e),
+                )
+            })
     }
 }
