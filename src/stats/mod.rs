@@ -2,16 +2,19 @@ use chrono::{DateTime, Local};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::Mul;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::exec::workload::WorkloadStats;
 use crate::stats::latency::{LatencyDistribution, LatencyDistributionRecorder};
 use cpu_time::ProcessTime;
+use hdrhistogram::serialization::interval_log;
 use percentiles::Percentile;
 use serde::{Deserialize, Serialize};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 use throughput::ThroughputMeter;
 use timeseries::TimeSeriesStats;
+
+use crate::stats::histogram::HistogramWriter;
 
 pub mod histogram;
 pub mod latency;
@@ -283,7 +286,7 @@ impl BenchmarkCmp<'_> {
 /// throughput and response time distributions. Computes confidence intervals.
 /// Can be also used to split the time-series into smaller sub-samples and to
 /// compute statistics for each sub-sample separately.
-pub struct Recorder {
+pub struct Recorder<'a> {
     pub start_time: SystemTime,
     pub end_time: SystemTime,
     pub start_instant: Instant,
@@ -306,9 +309,10 @@ pub struct Recorder {
     rate_limit: Option<f64>,
     concurrency_limit: NonZeroUsize,
     keep_log: bool,
+    hdrh_writer: &'a mut Option<Box<dyn HistogramWriter>>,
 }
 
-impl Recorder {
+impl Recorder<'_> {
     /// Creates a new recorder.
     /// The `rate_limit` and `concurrency_limit` parameters are used only as the
     /// reference levels for relative throughput and relative parallelism.
@@ -316,7 +320,8 @@ impl Recorder {
         rate_limit: Option<f64>,
         concurrency_limit: NonZeroUsize,
         keep_log: bool,
-    ) -> Recorder {
+        hdrh_writer: &mut Option<Box<dyn HistogramWriter>>,
+    ) -> Recorder<'_> {
         let start_time = SystemTime::now();
         let start_instant = Instant::now();
         Recorder {
@@ -342,25 +347,38 @@ impl Recorder {
             throughput_meter: ThroughputMeter::default(),
             concurrency_meter: TimeSeriesStats::default(),
             keep_log,
+            hdrh_writer,
         }
     }
 
     /// Adds the statistics of the completed request to the already collected statistics.
     /// Called on completion of each sample.
-    pub fn record(&mut self, samples: &[WorkloadStats]) -> &Sample {
-        assert!(!samples.is_empty());
-        for s in samples.iter() {
+    pub fn record(&mut self, workload_stats: &[WorkloadStats]) -> &Sample {
+        assert!(!workload_stats.is_empty());
+        let mut current_sample_latency_recorder: Option<
+            HashMap<String, LatencyDistributionRecorder>,
+        > = if self.hdrh_writer.is_some() {
+            Some(HashMap::new())
+        } else {
+            None
+        };
+        for s in workload_stats.iter() {
             self.request_latency.add(&s.session_stats.resp_times_ns);
-
             for fs in &s.function_stats {
                 self.cycle_latency.add(&fs.call_latency);
                 self.cycle_latency_by_fn
                     .entry(fs.function.name.clone())
                     .or_default()
                     .add(&fs.call_latency);
+                if let Some(ref mut recorder) = current_sample_latency_recorder {
+                    recorder
+                        .entry(fs.function.name.clone())
+                        .or_default()
+                        .add(&fs.call_latency);
+                }
             }
         }
-        let sample = Sample::new(self.start_instant, samples);
+        let sample = Sample::new(self.start_instant, workload_stats);
         self.cycle_count += sample.cycle_count;
         self.cycle_error_count += sample.cycle_error_count;
         self.request_count += sample.request_count;
@@ -376,6 +394,25 @@ impl Recorder {
         if !self.keep_log {
             self.log.clear();
         }
+
+        // Write HDR histogram data
+        if let Some(hdrh_writer) = self.hdrh_writer {
+            if let Some(ref recorder) = current_sample_latency_recorder {
+                let interval_start_time = Duration::from_millis((sample.time_s * 1000.0) as u64);
+                let interval_duration = Duration::from_millis((sample.duration_s * 1000.0) as u64);
+                for (fn_name, fn_latencies) in recorder.iter() {
+                    hdrh_writer
+                        .write_histogram(
+                            &fn_latencies.distribution().histogram.0,
+                            interval_start_time,
+                            interval_duration,
+                            interval_log::Tag::new(&format!("fn--{fn_name}")).expect("REASON"),
+                        )
+                        .unwrap();
+                }
+            }
+        }
+
         self.log.push(sample);
         self.log.last().unwrap()
     }
