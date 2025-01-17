@@ -16,6 +16,7 @@ use tokio::pin;
 use tokio::signal::ctrl_c;
 
 use crate::error::{LatteError, Result};
+use crate::stats::histogram::HistogramWriter;
 use crate::{
     BenchmarkStats, BoundedCycleCounter, Interval, Progress, Recorder, Workload, WorkloadStats,
 };
@@ -290,6 +291,7 @@ pub async fn par_execute(
     workload: Workload,
     show_progress: bool,
     keep_log: bool,
+    hdrh_writer: &mut Option<Box<dyn HistogramWriter>>,
 ) -> Result<BenchmarkStats> {
     if exec_options.cycle_range.1 <= exec_options.cycle_range.0 {
         return Err(LatteError::Configuration(format!(
@@ -315,7 +317,7 @@ pub async fn par_execute(
     let progress = Arc::new(StatusLine::with_options(progress, progress_opts));
     let deadline = BoundedCycleCounter::new(exec_options.duration, exec_options.cycle_range);
     let mut streams = Vec::with_capacity(thread_count);
-    let mut stats = Recorder::start(rate, concurrency, keep_log);
+    let mut stats = Recorder::start(rate, concurrency, keep_log, hdrh_writer);
 
     for _ in 0..thread_count {
         let s = spawn_stream(

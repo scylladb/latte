@@ -3,14 +3,13 @@ use std::fs::File;
 use std::io::{stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::{env, fs};
 
 use clap::Parser;
 use config::RunCommand;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use hdrhistogram::serialization::interval_log::Tag;
 use hdrhistogram::serialization::{interval_log, V2DeflateSerializer};
 use itertools::Itertools;
 use rune::Source;
@@ -32,6 +31,7 @@ use crate::exec::{par_execute, ExecutionOptions};
 use crate::report::{PathAndSummary, Report, RunConfigCmp};
 use crate::scripting::connect::ClusterInfo;
 use crate::scripting::context::Context;
+use crate::stats::histogram::HistogramWriter;
 use crate::stats::{BenchmarkCmp, BenchmarkStats, Recorder};
 use exec::cycle::BoundedCycleCounter;
 use exec::progress::Progress;
@@ -199,6 +199,7 @@ async fn load(conf: LoadCommand) -> Result<()> {
         loader,
         !conf.quiet,
         false,
+        &mut None,
     )
     .await?;
 
@@ -264,6 +265,7 @@ async fn run(conf: RunCommand) -> Result<()> {
             runner.clone()?,
             !conf.quiet,
             false,
+            &mut None,
         )
         .await?;
     }
@@ -289,16 +291,53 @@ async fn run(conf: RunCommand) -> Result<()> {
     };
 
     report::print_log_header();
-    let stats = match par_execute(
-        "Running...",
-        &exec_options,
-        conf.sampling_interval,
-        runner,
-        !conf.quiet,
-        conf.generate_report,
-    )
-    .await
-    {
+    let stats = match conf.hdrfile {
+        Some(ref hdrfile) => {
+            let path = Path::new(&hdrfile);
+            if let Some(parent_dir) = path.parent() {
+                fs::create_dir_all(parent_dir)
+                    .map_err(|e| LatteError::LogFileCreate(hdrfile.clone(), e))?;
+            }
+            let hdrfile = File::create(hdrfile)
+                .map_err(|e| LatteError::LogFileCreate(hdrfile.to_path_buf(), e))?;
+            let (non_blocking_writer, _hdrh_guard) = tracing_appender::non_blocking(hdrfile);
+            let non_blocking_writer = Box::new(non_blocking_writer);
+            let serializer = Box::new(V2DeflateSerializer::new());
+            let system_time_now = SystemTime::now();
+            let hdrh_writer = interval_log::IntervalLogWriterBuilder::new()
+                .add_comment(format!("[Logged with Latte {VERSION}]").as_str())
+                .with_start_time(system_time_now)
+                .with_base_time(system_time_now)
+                .with_max_value_divisor(1000000.0) // ms
+                .begin_log_with(Box::leak(non_blocking_writer), Box::leak(serializer))
+                .unwrap();
+            let boxed_hdrh_writer: Box<dyn HistogramWriter + Send + Sync> = Box::new(hdrh_writer);
+
+            par_execute(
+                "Running...",
+                &exec_options,
+                conf.sampling_interval,
+                runner,
+                !conf.quiet,
+                conf.generate_report,
+                &mut Some(boxed_hdrh_writer),
+            )
+            .await
+        }
+        None => {
+            par_execute(
+                "Running...",
+                &exec_options,
+                conf.sampling_interval,
+                runner,
+                !conf.quiet,
+                conf.generate_report,
+                &mut None,
+            )
+            .await
+        }
+    };
+    let stats = match stats {
         Ok(stats) => stats,
         Err(e) => {
             return Err(e);
@@ -470,13 +509,13 @@ async fn export_hdr_log(conf: HdrCommand) -> Result<()> {
             &sample.cycle_latency.histogram.0,
             interval_start_time,
             interval_duration,
-            Tag::new(format!("{tag_prefix}cycles").as_str()),
+            interval_log::Tag::new(format!("{tag_prefix}cycles").as_str()),
         )?;
         log_writer.write_histogram(
             &sample.request_latency.histogram.0,
             interval_start_time,
             interval_duration,
-            Tag::new(format!("{tag_prefix}requests").as_str()),
+            interval_log::Tag::new(format!("{tag_prefix}requests").as_str()),
         )?;
     }
     Ok(())

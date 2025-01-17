@@ -496,6 +496,14 @@ pub struct RunCommand {
     #[clap(long("generate-report"), required = false)]
     pub generate_report: bool,
 
+    /// Path to a file for streaming HDR histogram data in real-time.
+    #[clap(
+        long("hdrfile"),
+        aliases = &["hdr-file", "hdr-histogram", "hdr-histogram-file"],
+        required = false
+    )]
+    pub hdrfile: Option<PathBuf>,
+
     /// Path to an output file or directory where the JSON report should be written to.
     #[clap(short('o'), long)]
     #[serde(skip)]
