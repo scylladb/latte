@@ -25,3 +25,7 @@ build:
 .PHONY: clean
 clean:
 	cargo clean
+
+.PHONY: docker-build
+docker-build:
+	docker build --target production -t scylladb/latte:latest --compress .
