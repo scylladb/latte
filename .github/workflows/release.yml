@@ -1,0 +1,65 @@
+name: 'Release'
+
+on:
+  push:
+    tags:
+      - '*'
+jobs:
+  get_tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version_tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Get Tag
+        uses: olegtarasov/get-tag@v2.1.3
+        id: version_tag
+        with:
+          tagRegex: "(.*)"
+
+  docker_build:
+    uses: ./.github/workflows/docker.yml
+    needs: [get_tag]
+    with:
+      version: ${{ needs.get_tag.outputs.tag }}
+
+  release:
+    needs: [get_tag, docker_build]
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ needs.get_tag.outputs.tag }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        id: upload-release-asset-unix
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/release/latte
+          asset_name: latte-${{ matrix.os }}
+          asset_content_type: application/octet-stream
