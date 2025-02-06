@@ -5,7 +5,7 @@ WORKDIR /usr/src/app
 
 COPY . .
 
-RUN --mount=type=cache,target=/var/cache/apt apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
