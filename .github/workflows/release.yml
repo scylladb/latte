@@ -4,11 +4,15 @@ on:
   push:
     tags:
       - '*'
+    branches:
+      - 0.28.2-scylladb
+
 jobs:
   get_tag:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.version_tag.outputs.tag }}
+      # tag: ${{ steps.version_tag.outputs.tag }}
+      tag: "0.28.2-scylladb"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,20 +23,40 @@ jobs:
         with:
           tagRegex: "(.*)"
 
+  release:
+    name: Create release based on tag if not exists
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+        run: |
+          set +e
+          if [[ "$(gh release view $tag 2>&1)" == "release not found" ]]; then
+            echo "Release '$tag' not found. Creating..."
+            gh release create "$tag" \
+                --repo="$GITHUB_REPOSITORY" \
+                --title="${GITHUB_REPOSITORY#*/} ${tag#}" \
+                --generate-notes
+          else
+            echo "Release '$tag' found. Skipping this step..."
+          fi
+
   docker_build:
     uses: ./.github/workflows/docker.yml
     needs: [get_tag]
     with:
       version: ${{ needs.get_tag.outputs.tag }}
     secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      DOCKERHUB_USERNAME_VP: ${{ secrets.DOCKERHUB_USERNAME_VP }}
+      DOCKERHUB_TOKEN_VP: ${{ secrets.DOCKERHUB_TOKEN_VP }}
 
-  release:
+  release-artifacts:
     needs: [get_tag, docker_build]
     strategy:
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -45,16 +69,11 @@ jobs:
           command: build
           args: --release
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.3.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ needs.get_tag.outputs.tag }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Upload Release Asset
         id: upload-release-asset-unix
@@ -62,7 +81,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ./target/release/latte
-          asset_name: latte-${{ matrix.os }}
+          asset_name: latte-${{ needs.get_tag.outputs.tag }}--${{ matrix.os }}
           asset_content_type: application/octet-stream

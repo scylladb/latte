@@ -8,11 +8,10 @@ on:
         required: false
         type: string
     secrets:
-      DOCKERHUB_TOKEN:
+      DOCKERHUB_TOKEN_VP:
         required: true
-      DOCKERHUB_USERNAME:
+      DOCKERHUB_USERNAME_VP:
         required: true
-
   workflow_dispatch:
     inputs:
       version:
@@ -21,37 +20,95 @@ on:
         type: string
 
 jobs:
-  docker:
+  build-with-matrix:
+    name: Build ${{ matrix.build.platform }}
+    runs-on: ubuntu-24.04${{ matrix.build.platform == 'linux/arm64/v8' && '-arm' || '' }}
+    strategy:
+      matrix:
+        build:
+          - platform: linux/amd64
+            arch_short: amd
+          - platform: linux/arm64/v8
+            arch_short: arm
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME_VP }}
+          password: ${{ secrets.DOCKERHUB_TOKEN_VP }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Enable BuildKit
+        run: echo "DOCKER_BUILDKIT=1" >> $GITHUB_ENV
+
+      - name: Build and Cache Image for the ${{ matrix.build.platform }} platform
+        run: |
+          docker buildx build \
+            -t scylladb/hydra-loaders \
+            --platform ${{ matrix.build.platform }} \
+            --provenance false \
+            --metadata-file metadata \
+            --output push-by-digest=true,type=image,push=true \
+            .
+          echo "Metadata file info:"
+          cat metadata
+          CURRENT_SHA=$(grep -oP '"containerimage.digest": *"\Ksha256:[a-f0-9]+' metadata)
+          echo CURRENT_SHA=$CURRENT_SHA
+          echo $CURRENT_SHA > digest-${{ matrix.build.arch_short }}
+
+      - name: Upload Digest Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.build.arch_short }}
+          path: digest-${{ matrix.build.arch_short }}
+
+  push-after-matrix:
+    name: Push multiarch images
+    needs: build-with-matrix
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      # Needed for ARM64 Docker builds
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME_VP }}
+          password: ${{ secrets.DOCKERHUB_TOKEN_VP }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to dockerhub
-        uses: docker/login-action@v3
+      - name: Enable BuildKit
+        run: echo "DOCKER_BUILDKIT=1" >> $GITHUB_ENV
+
+      - name: Download Digests
+        uses: actions/download-artifact@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Build and push API
-        uses: docker/build-push-action@v6
-        with:
-          file: ./Dockerfile
-          context: .
-          push: true
-          pull: true
-          platforms: "linux/amd64,linux/arm64/v8"
-          target: production
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            scylladb/latte:latest
-            scylladb/latte:${{ inputs.version }}
+          path: digests
+
+      - name: Create Multi-Arch Manifest and Push
+        run: |
+          ls -Rl digests
+          SHA_AMD=$(cat digests/digest-amd/digest-amd)
+          SHA_ARM=$(cat digests/digest-arm/digest-arm)
+          echo SHA_AMD=$SHA_AMD
+          echo SHA_ARM=$SHA_ARM
+          docker manifest create scylladb/hydra-loaders:latte-${{ inputs.version }} \
+            --amend scylladb/hydra-loaders@$SHA_AMD \
+            --amend scylladb/hydra-loaders@$SHA_ARM
+          docker manifest push scylladb/hydra-loaders:latte-${{ inputs.version }}
+          docker manifest inspect scylladb/hydra-loaders:latte-${{ inputs.version }}
+
+          docker manifest create scylladb/hydra-loaders:latte-latest \
+            --amend scylladb/hydra-loaders@$SHA_AMD \
+            --amend scylladb/hydra-loaders@$SHA_ARM
+          docker manifest push scylladb/hydra-loaders:latte-latest
+          docker manifest inspect scylladb/hydra-loaders:latte-latest

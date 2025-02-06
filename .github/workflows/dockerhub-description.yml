@@ -16,8 +16,8 @@ jobs:
     - name: Docker Hub Description
       uses: peter-evans/dockerhub-description@v4
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password:  ${{ secrets.DOCKERHUB_TOKEN }}
-        repository: scylladb/latte
+        username: ${{ secrets.DOCKERHUB_USERNAME_VP }}
+        password:  ${{ secrets.DOCKERHUB_TOKEN_VP }}
+        repository: vponomarovatscylladb/hydra-loaders
         short-description: ${{ github.event.repository.description }}
         enable-url-completion: true
