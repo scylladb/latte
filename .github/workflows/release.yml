@@ -24,6 +24,9 @@ jobs:
     needs: [get_tag]
     with:
       version: ${{ needs.get_tag.outputs.tag }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   release:
     needs: [get_tag, docker_build]
