@@ -4,11 +4,15 @@ on:
   push:
     tags:
       - '*'
+    branches:
+      - debug
+
 jobs:
   get_tag:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.version_tag.outputs.tag }}
+      # tag: ${{ steps.version_tag.outputs.tag }}
+      tag: "0.28.2-scylladb"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,42 +23,72 @@ jobs:
         with:
           tagRegex: "(.*)"
 
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+        run: |
+          set +e
+          if [[ "$(gh release view $tag 2>&1)" == "release not found" ]]; then
+            echo "Release '$tag' not found. Creating..."
+            gh release create "$tag" \
+                --repo="$GITHUB_REPOSITORY" \
+                --title="${GITHUB_REPOSITORY#*/} ${tag#}" \
+                --generate-notes
+          else
+            echo "Release '$tag' found. Skipping this step..."
+          fi
+
   docker_build:
     uses: ./.github/workflows/docker.yml
     needs: [get_tag]
     with:
       version: ${{ needs.get_tag.outputs.tag }}
     secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      DOCKERHUB_USERNAME_VP: ${{ secrets.DOCKERHUB_USERNAME_VP }}
+      DOCKERHUB_TOKEN_VP: ${{ secrets.DOCKERHUB_TOKEN_VP }}
 
-  release:
-    needs: [get_tag, docker_build]
+  release-artifacts:
+    needs: [get_tag]
     strategy:
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Build
+      - name: Build Binary
         uses: actions-rs/cargo@v1
         with:
           command: build
           args: --release
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Set Binary Name
+        id: set_binary_name
+        run: |
+          BIN_NAME="latte-${{ needs.get_tag.outputs.tag }}--${{ matrix.os }}"
+          echo "BIN_NAME=$BIN_NAME" >> $GITHUB_ENV
+          echo "BIN_NAME=$BIN_NAME"
+        shell: bash
+
+      - name: Get Release Upload URL
+        id: get_upload_url
+        run: |
+          UPLOAD_URL=$(gh release view ${{ inputs.version }} --json uploadUrl -q '.uploadUrl' | sed 's/{.*//')
+          echo "UPLOAD_URL=${UPLOAD_URL}?name=${{ env.BIN_NAME }}" >> $GITHUB_ENV
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ needs.get_tag.outputs.tag }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # - name: Upload Binary
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: ${{ env.BIN_NAME }}
+      #     path: target/release/latte
 
       - name: Upload Release Asset
         id: upload-release-asset-unix
@@ -62,7 +96,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          upload_url: ${{ env.UPLOAD_URL }}
           asset_path: ./target/release/latte
-          asset_name: latte-${{ matrix.os }}
+          asset_name: ${{ env.BIN_NAME }}
           asset_content_type: application/octet-stream
