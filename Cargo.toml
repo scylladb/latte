@@ -39,6 +39,7 @@ rand = { version = "0.8", default-features = false, features = ["small_rng", "st
 rand_distr = "0.4"
 regex = "1.5"
 rune = "0.13"
+rust_decimal = "1.36"
 rust-embed = "8"
 scylla = { version = "0.13", features = ["ssl"] }
 search_path = "0.1"

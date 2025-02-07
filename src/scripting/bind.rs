@@ -13,7 +13,7 @@ use itertools::*;
 
 fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
     // TODO: add support for the following native CQL types:
-    //       'counter', 'date', 'decimal', 'duration', 'time' and 'variant'.
+    //       'counter', 'date', 'duration', 'time' and 'variant'.
     //       Also, for the 'tuple'.
     match (v, typ) {
         (Value::Bool(v), ColumnType::Boolean) => Ok(CqlValue::Boolean(*v)),
@@ -34,9 +34,24 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
         (Value::Integer(v), ColumnType::Timestamp) => {
             Ok(CqlValue::Timestamp(scylla::frame::value::CqlTimestamp(*v)))
         }
+        (Value::Integer(v), ColumnType::Decimal) => Ok(CqlValue::Decimal(
+            scylla::frame::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                (*v).to_be_bytes().to_vec(),
+                0,
+            ),
+        )),
 
         (Value::Float(v), ColumnType::Float) => Ok(CqlValue::Float(*v as f32)),
         (Value::Float(v), ColumnType::Double) => Ok(CqlValue::Double(*v)),
+        (Value::Float(v), ColumnType::Decimal) => {
+            let decimal = rust_decimal::Decimal::from_f64_retain(*v).unwrap();
+            Ok(CqlValue::Decimal(
+                scylla::frame::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                    decimal.mantissa().to_be_bytes().to_vec(),
+                    decimal.scale().try_into().unwrap(),
+                ),
+            ))
+        }
 
         (Value::String(s), ColumnType::Timeuuid) => {
             let timeuuid_str = s.borrow_ref().unwrap();
@@ -64,6 +79,16 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
                     Some(format!("{}", e)),
                 ))),
             }
+        }
+        (Value::String(s), ColumnType::Decimal) => {
+            let dec_str = s.borrow_ref().unwrap();
+            let decimal = rust_decimal::Decimal::from_str_exact(&dec_str).unwrap();
+            Ok(CqlValue::Decimal(
+                scylla::frame::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                    decimal.mantissa().to_be_bytes().to_vec(),
+                    decimal.scale().try_into().unwrap(),
+                ),
+            ))
         }
         (Value::Bytes(v), ColumnType::Blob) => Ok(CqlValue::Blob(v.borrow_ref().unwrap().to_vec())),
         (Value::Vec(v), ColumnType::Blob) => {
