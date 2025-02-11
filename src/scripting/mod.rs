@@ -31,6 +31,8 @@ fn try_install(
     context_module.function_meta(functions::batch_prepared)?;
     context_module.function_meta(functions::init_partition_row_distribution_preset)?;
     context_module.function_meta(functions::get_partition_idx)?;
+    context_module.function_meta(functions::init_zipf_preset)?;
+    context_module.function_meta(functions::get_zipf_partition_idx)?;
     context_module.function_meta(functions::get_datacenters)?;
     context_module.function_meta(functions::elapsed_secs)?;
 

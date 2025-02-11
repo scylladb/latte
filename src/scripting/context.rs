@@ -7,8 +7,11 @@ use crate::stats::session::SessionStats;
 use bytes::Bytes;
 use chrono::Utc;
 use itertools::enumerate;
+use rand_distr::{Distribution, Zipf};
 use rand::prelude::ThreadRng;
 use rand::random;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use rune::runtime::{Object, Shared};
 use rune::{Any, Value};
 use scylla::batch::{Batch, BatchType};
@@ -17,6 +20,7 @@ use scylla::prepared_statement::PreparedStatement;
 use scylla::query::Query;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::time::Instant;
 use tracing::error;
@@ -181,6 +185,12 @@ impl RowDistributionPreset {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ZipfDistributionPreset {
+    pub rng: StdRng,
+    pub zipf: Zipf<f64>,
+}
+
 /// This is the main object that a workload script uses to interface with the outside world.
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
@@ -195,6 +205,7 @@ pub struct Context {
     retry_number: u64,
     retry_interval: RetryInterval,
     partition_row_presets: HashMap<String, RowDistributionPreset>,
+    zipf_presets: RwLock<HashMap<String, ZipfDistributionPreset>>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
     #[rune(get)]
@@ -230,6 +241,7 @@ impl Context {
             retry_number,
             retry_interval,
             partition_row_presets: HashMap::new(),
+            zipf_presets: HashMap::new().into(),
             load_cycle_count: 0,
             preferred_datacenter,
             data: Value::Object(Shared::new(Object::new()).unwrap()),
@@ -252,6 +264,7 @@ impl Context {
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             partition_row_presets: self.partition_row_presets.clone(),
+            zipf_presets: self.zipf_presets.read().unwrap().clone().into(),
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
             data: deserialized,
@@ -734,6 +747,35 @@ impl Context {
     pub fn reset(&self) {
         self.stats.try_lock().unwrap().reset();
         *self.start_time.try_lock().unwrap() = Instant::now();
+    }
+
+    pub async fn init_zipf_preset(
+        &mut self,
+        preset_name: &str,
+        distribution_seed: u64,
+        partition_count: u64,
+        zipf_s: f64,
+    ) -> Result<(), CassError> {
+        let rng = StdRng::seed_from_u64(distribution_seed);
+        let zipf = Zipf::new(partition_count, zipf_s).unwrap();
+        self.zipf_presets.write().unwrap().insert(
+            preset_name.to_string(),
+            ZipfDistributionPreset{
+                rng,
+                zipf,
+            }
+        );
+        Ok(())
+    }
+
+    /// Returns a partition index based on the stress operation index and a preset of values
+    pub async fn get_zipf_partition_idx(&self, preset_name: &str) -> Result<u64, CassError> {
+        let mut presets = self.zipf_presets.write().unwrap();
+        let preset = presets.get_mut(preset_name).ok_or_else(|| {
+            CassError(CassErrorKind::PartitionRowPresetNotFound(preset_name.to_string()))
+        })?;
+        let rng = &mut preset.rng;
+        Ok(preset.zipf.sample(rng) as u64)
     }
 }
 

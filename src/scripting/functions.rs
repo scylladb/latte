@@ -294,6 +294,28 @@ pub async fn get_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>, idx: u6
 }
 
 #[rune::function(instance)]
+pub async fn init_zipf_preset(
+    mut ctx: Mut<Context>,
+    preset_name: Ref<str>,
+    distribution_seed: u64,
+    partition_count: u64,
+    zipf_s: f64,
+) -> Result<(), CassError> {
+    ctx.init_zipf_preset(
+        &preset_name,
+        distribution_seed,
+        partition_count,
+        zipf_s,
+    )
+    .await
+}
+
+#[rune::function(instance)]
+pub async fn get_zipf_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>) -> u64 {
+    ctx.get_zipf_partition_idx(&preset_name).await.expect("REASON")
+}
+
+#[rune::function(instance)]
 pub async fn get_datacenters(ctx: Ref<Context>) -> Result<Vec<String>, CassError> {
     ctx.get_datacenters().await
 }

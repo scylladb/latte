@@ -45,6 +45,7 @@ pub enum CassErrorKind {
     FailedToConnect(Vec<String>, NewSessionError),
     PreparedStatementNotFound(String),
     PartitionRowPresetNotFound(String),
+    ZipfDistributionPresetNotFound(String),
     QueryRetriesExceeded(String),
     QueryParamConversion(String, ColumnType, Option<String>),
     ValueOutOfRange(String, ColumnType),
@@ -83,6 +84,9 @@ impl CassError {
             }
             CassErrorKind::PartitionRowPresetNotFound(s) => {
                 write!(buf, "Partition-row preset not found: {s}")
+            }
+            CassErrorKind::ZipfDistributionPresetNotFound(s) => {
+                write!(buf, "Zipf distribution preset not found: {s}")
             }
             CassErrorKind::QueryRetriesExceeded(s) => {
                 write!(buf, "QueryRetriesExceeded: {s}")
