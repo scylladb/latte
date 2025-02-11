@@ -311,8 +311,17 @@ pub async fn init_zipf_preset(
 }
 
 #[rune::function(instance)]
-pub async fn get_zipf_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>) -> u64 {
-    ctx.get_zipf_partition_idx(&preset_name).await.expect("REASON")
+pub async fn get_zipf_partition_idx(
+    ctx: Ref<Context>,
+    preset_name: Ref<str>,
+    use_local_rng: bool,
+    use_seed_for_std_rng: bool,
+) -> u64 {
+    ctx.get_zipf_partition_idx(
+        &preset_name,
+        use_local_rng,
+        use_seed_for_std_rng,
+    ).await.expect("REASON")
 }
 
 #[rune::function(instance)]
