@@ -2,30 +2,26 @@ use openssl::error::ErrorStack;
 use rune::alloc::fmt::TryWrite;
 use rune::runtime::{TypeInfo, VmResult};
 use rune::{vm_write, Any};
-use scylla::_macro_internal::{ColumnType, CqlValue};
-use scylla::transport::errors::{DbError, NewSessionError, QueryError};
+use scylla::errors::{ExecutionError, NewSessionError, PrepareError};
+use scylla::response::query_result::IntoRowsResultError;
+use scylla::value::CqlValue;
 use std::fmt::{Display, Formatter};
 
 #[derive(Any, Debug)]
 pub struct CassError(pub CassErrorKind);
 
 impl CassError {
-    pub fn prepare_error(cql: &str, err: QueryError) -> CassError {
+    pub fn prepare_error(cql: &str, err: PrepareError) -> CassError {
         CassError(CassErrorKind::Prepare(cql.to_string(), err))
     }
 
-    pub fn query_execution_error(cql: &str, params: &[CqlValue], err: QueryError) -> CassError {
+    pub fn query_execution_error(cql: &str, params: &[CqlValue], err: ExecutionError) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
             params: params.iter().map(cql_value_obj_to_string).collect(),
         };
         let kind = match err {
-            QueryError::RequestTimeout(_)
-            | QueryError::TimeoutError
-            | QueryError::DbError(
-                DbError::Overloaded | DbError::ReadTimeout { .. } | DbError::WriteTimeout { .. },
-                _,
-            ) => CassErrorKind::Overloaded(query, err),
+            ExecutionError::RequestTimeout(_) => CassErrorKind::Overloaded(query, err),
             _ => CassErrorKind::QueryExecution(query, err),
         };
         CassError(kind)
@@ -39,6 +35,15 @@ impl CassError {
     }
 }
 
+impl From<IntoRowsResultError> for CassError {
+    fn from(err: IntoRowsResultError) -> Self {
+        CassError(CassErrorKind::Error(format!(
+            "Failed to get result rows: {}",
+            err
+        )))
+    }
+}
+
 #[derive(Debug)]
 pub enum CassErrorKind {
     SslConfiguration(ErrorStack),
@@ -46,13 +51,13 @@ pub enum CassErrorKind {
     PreparedStatementNotFound(String),
     PartitionRowPresetNotFound(String),
     QueryRetriesExceeded(String),
-    QueryParamConversion(String, ColumnType, Option<String>),
-    ValueOutOfRange(String, ColumnType),
+    QueryParamConversion(String, String, Option<String>),
+    ValueOutOfRange(String, String),
     InvalidNumberOfQueryParams,
     InvalidQueryParamsObject(TypeInfo),
-    Prepare(String, QueryError),
-    Overloaded(QueryInfo, QueryError),
-    QueryExecution(QueryInfo, QueryError),
+    Prepare(String, PrepareError),
+    Overloaded(QueryInfo, ExecutionError),
+    QueryExecution(QueryInfo, ExecutionError),
     Error(String),
 }
 
@@ -149,13 +154,13 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             format!("Blob(<size>={})", param.len())
         }
         CqlValue::UserDefinedType {
+            name,
             keyspace,
-            type_name,
             fields,
         } => {
             let mut result = format!(
                 "UDT {{ keyspace: \"{}\", type_name: \"{}\", fields: [",
-                keyspace, type_name,
+                keyspace, name,
             );
             for (field_name, field_value) in fields {
                 let field_string = match field_value {

@@ -4,18 +4,20 @@ use crate::scripting::bind;
 use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::connect::ClusterInfo;
 use crate::stats::session::SessionStats;
-use bytes::Bytes;
 use chrono::Utc;
 use itertools::enumerate;
 use rand::prelude::ThreadRng;
 use rand::random;
 use rune::runtime::{Object, Shared};
 use rune::{Any, Value};
-use scylla::batch::{Batch, BatchType};
-use scylla::frame::response::result::CqlValue;
-use scylla::prepared_statement::PreparedStatement;
-use scylla::query::Query;
-use std::collections::HashMap;
+use scylla::client::session::Session;
+use scylla::response::PagingState;
+use scylla::statement::batch::{Batch, BatchType};
+use scylla::statement::prepared::PreparedStatement;
+use scylla::statement::unprepared::Statement;
+use scylla::value::CqlValue;
+use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -188,7 +190,7 @@ pub struct Context {
     start_time: TryLock<Instant>,
     // NOTE: 'session' is defined as optional for being able to test methods
     // which don't 'depend on'/'use' the 'session' object.
-    session: Option<Arc<scylla::Session>>,
+    session: Option<Arc<Session>>,
     page_size: u64,
     statements: HashMap<String, Arc<PreparedStatement>>,
     stats: TryLock<SessionStats>,
@@ -215,7 +217,7 @@ unsafe impl Sync for Context {}
 
 impl Context {
     pub fn new(
-        session: Option<scylla::Session>,
+        session: Option<Session>,
         page_size: u64,
         preferred_datacenter: String,
         retry_number: u64,
@@ -267,19 +269,18 @@ impl Context {
         match &self.session {
             Some(session) => {
                 let rs = session
-                    .query(cql, ())
+                    .query_unpaged(cql, ())
                     .await
                     .map_err(|e| CassError::query_execution_error(cql, &[], e));
                 match rs {
                     Ok(rs) => {
-                        if let Some(rows) = rs.rows {
-                            if let Some(row) = rows.into_iter().next() {
-                                if let Ok((name, cassandra_version)) = row.into_typed() {
-                                    return Ok(Some(ClusterInfo {
-                                        name,
-                                        cassandra_version,
-                                    }));
-                                }
+                        let rows_result = rs.into_rows_result()?;
+                        while let Ok(mut row) = rows_result.rows() {
+                            if let Some(Ok((name, cassandra_version))) = row.next() {
+                                return Ok(Some(ClusterInfo {
+                                    name,
+                                    cassandra_version,
+                                }));
                             }
                         }
                         Ok(None)
@@ -518,8 +519,14 @@ impl Context {
     pub async fn get_datacenters(&self) -> Result<Vec<String>, CassError> {
         match &self.session {
             Some(session) => {
-                let dc_info = session.get_cluster_data().get_datacenters_info();
-                let mut datacenters: Vec<String> = dc_info.keys().cloned().collect();
+                let cluster_data = session.get_cluster_state();
+                let mut datacenters_hashset = HashSet::new();
+                for node in cluster_data.get_nodes_info() {
+                    if let Some(dc) = &node.datacenter {
+                        datacenters_hashset.insert(dc.clone());
+                    }
+                }
+                let mut datacenters: Vec<String> = datacenters_hashset.into_iter().collect();
                 datacenters.sort();
                 Ok(datacenters)
             }
@@ -533,9 +540,8 @@ impl Context {
     pub async fn prepare(&mut self, key: &str, cql: &str) -> Result<(), CassError> {
         match &self.session {
             Some(session) => {
-                let query = Query::new(cql).with_page_size(self.page_size as i32);
                 let statement = session
-                    .prepare(query)
+                    .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
                     .await
                     .map_err(|e| CassError::prepare_error(cql, e))?;
                 self.statements.insert(key.to_string(), Arc::new(statement));
@@ -551,23 +557,46 @@ impl Context {
     pub async fn execute(&self, cql: &str) -> Result<(), CassError> {
         match &self.session {
             Some(session) => {
-                let query = Query::new(cql).with_page_size(self.page_size as i32);
+                let statement = session
+                    .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
+                    .await
+                    .map_err(|e| CassError::prepare_error(cql, e))?;
+
                 let mut all_pages_duration = Duration::ZERO;
-                let mut paging_state: Option<Bytes> = None;
+                let mut paging_state = PagingState::start();
                 let mut rows_cnt: u64 = 0;
 
                 let mut current_attempt_num = 0;
                 while current_attempt_num <= self.retry_number {
                     let start_time = self.stats.try_lock().unwrap().start_request();
                     let rs = session
-                        .query_paged(query.clone(), (), paging_state.clone())
+                        .execute_single_page(&statement, (), paging_state.clone())
                         .await;
                     let current_duration = Instant::now() - start_time;
                     match rs {
-                        Ok(ref page) => {
-                            paging_state = page.paging_state.clone();
-                            rows_cnt += page.rows.as_ref().map(|r| r.len()).unwrap_or(0) as u64;
+                        Ok((ref page, ref paging_state_response)) => {
+                            rows_cnt += page
+                                .clone()
+                                .into_rows_result()
+                                .map(|r| r.rows_num())
+                                .unwrap_or(0) as u64;
                             all_pages_duration += current_duration;
+
+                            match paging_state_response.clone().into_paging_control_flow() {
+                                ControlFlow::Break(()) => {
+                                    self.stats.try_lock().unwrap().complete_request(
+                                        all_pages_duration,
+                                        Some(rows_cnt),
+                                        &rs,
+                                    );
+                                    return Ok(());
+                                }
+                                ControlFlow::Continue(new_paging_state) => {
+                                    paging_state = new_paging_state;
+                                    current_attempt_num = 0;
+                                    continue; // get next page
+                                }
+                            }
                         }
                         Err(e) => {
                             let current_error =
@@ -577,17 +606,6 @@ impl Context {
                             continue;
                         }
                     }
-                    if paging_state.is_some() {
-                        current_attempt_num = 0;
-                        continue; // get next page
-                    }
-                    self.stats.try_lock().unwrap().complete_request(
-                        all_pages_duration,
-                        Some(rows_cnt),
-                        &rs,
-                    );
-                    rs.map_err(|e| CassError::query_execution_error(cql, &[], e.clone()))?;
-                    return Ok(());
                 }
                 Err(CassError::query_retries_exceeded(self.retry_number))
             }
@@ -608,21 +626,39 @@ impl Context {
         match &self.session {
             Some(session) => {
                 let mut all_pages_duration = Duration::ZERO;
-                let mut paging_state: Option<Bytes> = None;
+                let mut paging_state = PagingState::start();
                 let mut rows_cnt: u64 = 0;
 
                 let mut current_attempt_num = 0;
                 while current_attempt_num <= self.retry_number {
                     let start_time = self.stats.try_lock().unwrap().start_request();
                     let rs = session
-                        .execute_paged(statement, params.clone(), paging_state.clone())
+                        .execute_single_page(statement, params.clone(), paging_state.clone())
                         .await;
                     let current_duration = Instant::now() - start_time;
                     match rs {
-                        Ok(ref page) => {
-                            paging_state = page.paging_state.clone();
-                            rows_cnt += page.rows.as_ref().map(|r| r.len()).unwrap_or(0) as u64;
+                        Ok((ref page, ref paging_state_response)) => {
+                            rows_cnt += page
+                                .clone()
+                                .into_rows_result()
+                                .map(|r| r.rows_num())
+                                .unwrap_or(0) as u64;
                             all_pages_duration += current_duration;
+                            match paging_state_response.clone().into_paging_control_flow() {
+                                ControlFlow::Break(()) => {
+                                    self.stats.try_lock().unwrap().complete_request(
+                                        all_pages_duration,
+                                        Some(rows_cnt),
+                                        &rs,
+                                    );
+                                    return Ok(());
+                                }
+                                ControlFlow::Continue(new_paging_state) => {
+                                    paging_state = new_paging_state;
+                                    current_attempt_num = 0;
+                                    continue; // get next page
+                                }
+                            }
                         }
                         Err(e) => {
                             let current_error = CassError::query_execution_error(
@@ -635,19 +671,6 @@ impl Context {
                             continue;
                         }
                     }
-                    if paging_state.is_some() {
-                        current_attempt_num = 0;
-                        continue; // get next page
-                    }
-                    self.stats.try_lock().unwrap().complete_request(
-                        all_pages_duration,
-                        Some(rows_cnt),
-                        &rs,
-                    );
-                    rs.map_err(|e| {
-                        CassError::query_execution_error(statement.get_statement(), &params, e)
-                    })?;
-                    return Ok(());
                 }
                 Err(CassError::query_retries_exceeded(self.retry_number))
             }
@@ -680,7 +703,9 @@ impl Context {
             let statement_col_specs = statement.get_variable_col_specs();
             batch.append_statement((**statement).clone());
             batch_values.push(bind::to_scylla_query_params(
-                params.get(i).expect("REASON"),
+                params
+                    .get(i)
+                    .expect("failed to bind rune values to the statement columns"),
                 statement_col_specs,
             )?);
         }
@@ -693,7 +718,7 @@ impl Context {
                     let duration = Instant::now() - start_time;
                     match rs {
                         Ok(_) => {
-                            self.stats.try_lock().unwrap().complete_request(
+                            self.stats.try_lock().unwrap().complete_request_batch(
                                 duration,
                                 Some(batch_values.len() as u64),
                                 &rs,

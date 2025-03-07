@@ -1,7 +1,8 @@
 use crate::config::PRINT_RETRY_ERROR_LIMIT;
 use crate::stats::latency::LatencyDistributionRecorder;
-use scylla::transport::errors::QueryError;
-use scylla::QueryResult;
+use scylla::errors::ExecutionError;
+use scylla::response::query_result::QueryResult;
+use scylla::response::PagingStateResponse;
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -37,7 +38,34 @@ impl SessionStats {
         &mut self,
         duration: Duration,
         total_rows: Option<u64>,
-        rs: &Result<QueryResult, QueryError>,
+        rs: &Result<(QueryResult, PagingStateResponse), ExecutionError>,
+    ) {
+        self.queue_length -= 1;
+        self.resp_times_ns.record(duration);
+        self.req_count += 1;
+        match rs {
+            Ok((ref page, _)) => match total_rows {
+                Some(n) => self.row_count += n,
+                None => {
+                    self.row_count += page
+                        .clone()
+                        .into_rows_result()
+                        .expect("Failed to read rows from the response")
+                        .rows_num() as u64
+                }
+            },
+            Err(e) => {
+                self.req_error_count += 1;
+                self.req_errors.insert(format!("{e}"));
+            }
+        }
+    }
+
+    pub fn complete_request_batch(
+        &mut self,
+        duration: Duration,
+        total_rows: Option<u64>,
+        rs: &Result<QueryResult, ExecutionError>,
     ) {
         self.queue_length -= 1;
         self.resp_times_ns.record(duration);
@@ -45,7 +73,13 @@ impl SessionStats {
         match rs {
             Ok(rs) => match total_rows {
                 Some(n) => self.row_count += n,
-                None => self.row_count += rs.rows.as_ref().map(|r| r.len()).unwrap_or(0) as u64,
+                None => {
+                    self.row_count += rs
+                        .clone()
+                        .into_rows_result()
+                        .map(|r| r.rows_num())
+                        .unwrap_or(0) as u64
+                }
             },
             Err(e) => {
                 self.req_error_count += 1;
