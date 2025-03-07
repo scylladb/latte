@@ -1,12 +1,15 @@
 use crate::config::ConnectionConf;
 use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::context::Context;
-use openssl::ssl::{SslContext, SslContextBuilder, SslFiletype, SslMethod, SslVerifyMode};
-use scylla::load_balancing::DefaultPolicy;
-use scylla::transport::session::PoolSize;
-use scylla::{ExecutionProfile, SessionBuilder};
+use openssl::ssl::{SslContextBuilder, SslFiletype, SslMethod, SslVerifyMode};
+use scylla::client::session::TlsContext;
+use scylla::client::PoolSize;
+use scylla::policies::load_balancing::DefaultPolicy;
 
-fn ssl_context(conf: &&ConnectionConf) -> Result<Option<SslContext>, CassError> {
+use scylla::client::execution_profile::ExecutionProfile;
+use scylla::client::session_builder::SessionBuilder;
+
+fn tls_context(conf: &&ConnectionConf) -> Result<Option<TlsContext>, CassError> {
     if conf.ssl {
         let mut ssl = SslContextBuilder::new(SslMethod::tls())?;
         if let Some(path) = &conf.ssl_ca_cert_file {
@@ -21,7 +24,7 @@ fn ssl_context(conf: &&ConnectionConf) -> Result<Option<SslContext>, CassError> 
         if conf.ssl_peer_verification {
             ssl.set_verify(SslVerifyMode::PEER);
         }
-        Ok(Some(ssl.build()))
+        Ok(Some(TlsContext::from(ssl.build())))
     } else {
         Ok(None)
     }
@@ -47,7 +50,7 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         .known_nodes(&conf.addresses)
         .pool_size(PoolSize::PerShard(conf.count))
         .user(&conf.user, &conf.password)
-        .ssl_context(ssl_context(&conf)?)
+        .tls_context(tls_context(&conf)?)
         .default_execution_profile_handle(profile.into_handle())
         .build()
         .await
