@@ -1,7 +1,8 @@
-FROM rust:1.84-slim-bookworm AS builder
-
+FROM rust:1.85-slim-bookworm AS builder
 
 WORKDIR /usr/src/app
+
+ENV RUSTFLAGS="--cfg fetch_extended_version_info"
 
 COPY . .
 
