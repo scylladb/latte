@@ -58,3 +58,4 @@ jobs:
           components: rustfmt, clippy
           cache: true
       - run: cargo clippy -- -D warnings
+      - run: RUSTFLAGS="--cfg fetch_extended_version_info" cargo clippy -- -D warnings

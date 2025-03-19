@@ -641,6 +641,13 @@ pub struct PlotCommand {
 }
 
 #[derive(Parser, Debug)]
+pub struct VersionCommand {
+    /// Whether to output version info in json format or not
+    #[clap(long, short('j'), required = false)]
+    pub json: bool,
+}
+
+#[derive(Parser, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Opens the specified workload script file for editing.
@@ -693,13 +700,15 @@ pub enum Command {
 
     /// Plots recorded samples. Saves output in SVG format.
     Plot(PlotCommand),
+
+    /// Outputs Latte and Scylla driver versions
+    Version(VersionCommand),
 }
 
 #[derive(Parser, Debug)]
 #[command(
-name = "Cassandra Latency and Throughput Tester",
-author = "Piotr Kołaczkowski <pkolaczk@datastax.com>",
-version = clap::crate_version ! (),
+    name = "Latency and Throughput Tester for Cassandra and ScyllaDB",
+    author = "Piotr Kołaczkowski <pkolaczk@datastax.com>"
 )]
 pub struct AppConfig {
     /// Name of the log file.

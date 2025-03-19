@@ -5,6 +5,9 @@ on:
     tags:
       - '*'
 
+env:
+  RUSTFLAGS: "--cfg fetch_extended_version_info"
+
 jobs:
   get_tag:
     runs-on: ubuntu-latest

@@ -6,7 +6,7 @@ use std::process::exit;
 use std::time::{Duration, SystemTime};
 use std::{env, fs};
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use config::RunCommand;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -24,7 +24,7 @@ use walkdir::WalkDir;
 
 use crate::config::{
     AppConfig, Command, ConnectionConf, EditCommand, HdrCommand, Interval, ListCommand,
-    LoadCommand, SchemaCommand, ShowCommand,
+    LoadCommand, SchemaCommand, ShowCommand, VersionCommand,
 };
 use crate::error::{LatteError, Result};
 use crate::exec::{par_execute, ExecutionOptions};
@@ -33,6 +33,7 @@ use crate::scripting::connect::ClusterInfo;
 use crate::scripting::context::Context;
 use crate::stats::histogram::HistogramWriter;
 use crate::stats::{BenchmarkCmp, BenchmarkStats, Recorder};
+use crate::version::{format_version_info_human, get_formatted_version_info};
 use exec::cycle::BoundedCycleCounter;
 use exec::progress::Progress;
 use exec::workload::{FnRef, Program, Workload, WorkloadStats, LOAD_FN};
@@ -45,6 +46,7 @@ mod exec;
 mod report;
 mod scripting;
 mod stats;
+mod version;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -521,6 +523,11 @@ async fn export_hdr_log(conf: HdrCommand) -> Result<()> {
     Ok(())
 }
 
+async fn print_version(conf: VersionCommand) -> Result<()> {
+    println!("{}", get_formatted_version_info(conf.json));
+    Ok(())
+}
+
 async fn async_main(run_id: String, command: Command) -> Result<()> {
     match command {
         Command::Edit(config) => edit(config)?,
@@ -534,6 +541,7 @@ async fn async_main(run_id: String, command: Command) -> Result<()> {
         Command::Show(config) => show(config).await?,
         Command::Hdr(config) => export_hdr_log(config).await?,
         Command::Plot(config) => plot_graph(config).await?,
+        Command::Version(config) => print_version(config).await?,
     }
     Ok(())
 }
@@ -600,8 +608,14 @@ fn run_id() -> String {
 }
 
 fn main() {
+    // NOTE: use 2 new lines because 'latte --version' concatenates the app name and its version
+    let boxed_version = format!("\n\n{}", format_version_info_human()).into_boxed_str();
+    let static_version: &'static str = Box::leak(boxed_version);
+    let app_cmd = AppConfig::command().version(static_version);
+    let app_cmd_matches = app_cmd.get_matches();
+    let config = AppConfig::from_arg_matches(&app_cmd_matches).expect("Failed to parse arguments");
+
     let run_id = run_id();
-    let config = AppConfig::parse();
     let _guard = if config.enable_logging {
         match setup_logging(run_id.as_str(), &config) {
             Ok(guard) => Some(guard),
