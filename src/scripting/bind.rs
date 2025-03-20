@@ -14,7 +14,7 @@ use itertools::*;
 
 fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
     // TODO: add support for the following native CQL types:
-    //       'counter', 'date', 'duration', 'time' and 'variant'.
+    //       'date', 'duration', 'time' and 'variant'.
     //       Also, for the 'tuple'.
     match (v, typ) {
         (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => Ok(CqlValue::Boolean(*v)),
@@ -38,6 +38,9 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             convert_int(*v, NativeType::Int, CqlValue::Int)
         }
         (Value::Integer(v), ColumnType::Native(NativeType::BigInt)) => Ok(CqlValue::BigInt(*v)),
+        (Value::Integer(v), ColumnType::Native(NativeType::Counter)) => {
+            Ok(CqlValue::Counter(scylla::value::Counter(*v)))
+        }
         (Value::Integer(v), ColumnType::Native(NativeType::Timestamp)) => {
             Ok(CqlValue::Timestamp(scylla::value::CqlTimestamp(*v)))
         }
