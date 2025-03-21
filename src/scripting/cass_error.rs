@@ -4,7 +4,7 @@ use rune::runtime::{TypeInfo, VmResult};
 use rune::{vm_write, Any};
 use scylla::errors::{ExecutionError, NewSessionError, PrepareError};
 use scylla::response::query_result::IntoRowsResultError;
-use scylla::value::CqlValue;
+use scylla::value::{CqlValue, ValueOverflow};
 use std::fmt::{Display, Formatter};
 
 #[derive(Any, Debug)]
@@ -93,13 +93,13 @@ impl CassError {
                 write!(buf, "QueryRetriesExceeded: {s}")
             }
             CassErrorKind::ValueOutOfRange(v, t) => {
-                write!(buf, "Value {v} out of range for Cassandra type {t:?}")
+                write!(buf, "Value {v} out of range for CQL type {t:?}")
             }
             CassErrorKind::QueryParamConversion(v, t, None) => {
-                write!(buf, "Cannot convert value {v} to Cassandra type {t:?}")
+                write!(buf, "Cannot convert value {v} to CQL type {t:?}")
             }
             CassErrorKind::QueryParamConversion(v, t, Some(e)) => {
-                write!(buf, "Cannot convert value {v} to Cassandra type {t:?}: {e}")
+                write!(buf, "Cannot convert value {v} to CQL type {t:?}: {e}")
             }
             CassErrorKind::InvalidNumberOfQueryParams => {
                 write!(buf, "Incorrect number of query parameters")
@@ -134,6 +134,12 @@ impl Display for CassError {
 impl From<ErrorStack> for CassError {
     fn from(e: ErrorStack) -> CassError {
         CassError(CassErrorKind::SslConfiguration(e))
+    }
+}
+
+impl From<ValueOverflow> for CassError {
+    fn from(e: ValueOverflow) -> CassError {
+        CassError(CassErrorKind::Error(e.to_string()))
     }
 }
 

@@ -2,20 +2,20 @@
 
 use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::cql_types::Uuid;
+use chrono::{NaiveDate, NaiveTime};
 use rune::{Any, ToValue, Value};
 use scylla::_macro_internal::ColumnType;
 use scylla::frame::response::result::{CollectionType, ColumnSpec, NativeType};
 use scylla::response::query_result::ColumnSpecs;
-use scylla::value::{CqlTimeuuid, CqlValue};
+use scylla::value::{CqlDate, CqlTime, CqlTimeuuid, CqlValue, CqlVarint};
 use std::net::IpAddr;
 use std::str::FromStr;
 
 use itertools::*;
 
 fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
-    // TODO: add support for the following native CQL types:
-    //       'date', 'duration', 'time' and 'variant'.
-    //       Also, for the 'tuple'.
+    // TODO: add support for the following CQL data types:
+    //       'duration' and 'tuple'.
     match (v, typ) {
         (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => Ok(CqlValue::Boolean(*v)),
 
@@ -44,6 +44,20 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
         (Value::Integer(v), ColumnType::Native(NativeType::Timestamp)) => {
             Ok(CqlValue::Timestamp(scylla::value::CqlTimestamp(*v)))
         }
+        (Value::Integer(v), ColumnType::Native(NativeType::Date)) => match (*v).try_into() {
+            Ok(date) => Ok(CqlValue::Date(CqlDate(date))),
+            Err(_) => Err(CassError(CassErrorKind::QueryParamConversion(
+                format!("{:?}", v),
+                "NativeType::Date".to_string(),
+                Some("Invalid date value".to_string()),
+            ))),
+        },
+        (Value::Integer(v), ColumnType::Native(NativeType::Time)) => {
+            Ok(CqlValue::Time(CqlTime(*v)))
+        }
+        (Value::Integer(v), ColumnType::Native(NativeType::Varint)) => Ok(CqlValue::Varint(
+            CqlVarint::from_signed_bytes_be((*v).to_be_bytes().to_vec()),
+        )),
         (Value::Integer(v), ColumnType::Native(NativeType::Decimal)) => Ok(CqlValue::Decimal(
             scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
                 (*v).to_be_bytes().to_vec(),
@@ -63,6 +77,51 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             ))
         }
 
+        (Value::String(s), ColumnType::Native(NativeType::Date)) => {
+            let date_str = s.borrow_ref().unwrap();
+            let naive_date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|e| {
+                CassError(CassErrorKind::QueryParamConversion(
+                    format!("{:?}", v),
+                    "NativeType::Date".to_string(),
+                    Some(format!("{}", e)),
+                ))
+            })?;
+            let cql_date = CqlDate::from(naive_date);
+            Ok(CqlValue::Date(cql_date))
+        }
+        (Value::String(s), ColumnType::Native(NativeType::Time)) => {
+            let time_str = s.borrow_ref().unwrap();
+            let mut time_format = "%H:%M:%S".to_string();
+            if time_str.contains('.') {
+                time_format = format!("{}.%f", time_format);
+            }
+            let naive_time = NaiveTime::parse_from_str(&time_str, &time_format).map_err(|e| {
+                CassError(CassErrorKind::QueryParamConversion(
+                    format!("{:?}", v),
+                    "NativeType::Time".to_string(),
+                    Some(format!("{}", e)),
+                ))
+            })?;
+            let cql_time = CqlTime::try_from(naive_time)?;
+            Ok(CqlValue::Time(cql_time))
+        }
+        (Value::String(s), ColumnType::Native(NativeType::Varint)) => {
+            let varint_str = s.borrow_ref().unwrap();
+            if !varint_str.chars().all(|c| c.is_ascii_digit()) {
+                return Err(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{:?}", v),
+                    "NativeType::Varint".to_string(),
+                    Some("Input contains non-digit characters".to_string()),
+                )));
+            }
+            let byte_vector: Vec<u8> = varint_str
+                .chars()
+                .map(|c| c.to_digit(10).expect("Invalid digit") as u8)
+                .collect();
+            Ok(CqlValue::Varint(
+                scylla::value::CqlVarint::from_signed_bytes_be(byte_vector),
+            ))
+        }
         (Value::String(s), ColumnType::Native(NativeType::Timeuuid)) => {
             let timeuuid_str = s.borrow_ref().unwrap();
             let timeuuid = CqlTimeuuid::from_str(timeuuid_str.as_str());
