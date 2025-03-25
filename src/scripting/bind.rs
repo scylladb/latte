@@ -3,19 +3,37 @@
 use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::cql_types::Uuid;
 use chrono::{NaiveDate, NaiveTime};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rune::{Any, ToValue, Value};
 use scylla::_macro_internal::ColumnType;
 use scylla::frame::response::result::{CollectionType, ColumnSpec, NativeType};
 use scylla::response::query_result::ColumnSpecs;
-use scylla::value::{CqlDate, CqlTime, CqlTimeuuid, CqlValue, CqlVarint};
+use scylla::value::{CqlDate, CqlDuration, CqlTime, CqlTimeuuid, CqlValue, CqlVarint};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
 
 use itertools::*;
 
+static DURATION_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?P<years>\d+)y|",
+        r"(?P<months>\d+)mo|",
+        r"(?P<weeks>\d+)w|",
+        r"(?P<days>\d+)d|",
+        r"(?P<hours>\d+)h|",
+        r"(?P<seconds>\d+)s|",
+        r"(?P<millis>\d+)ms|",
+        r"(?P<micros>\d+)us|",
+        r"(?P<nanoseconds>\d+)ns|",
+        r"(?P<minutes>\d+)m|", // must be after 'mo' and 'ms' matchers
+        r"(?P<invalid>.+)",    // must be last, used for all incorrect matches
+    ))
+    .unwrap()
+});
+
 fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
-    // TODO: add support for the following CQL data types:
-    //       'duration'
     match (v, typ) {
         (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => Ok(CqlValue::Boolean(*v)),
 
@@ -105,6 +123,104 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             let cql_time = CqlTime::try_from(naive_time)?;
             Ok(CqlValue::Time(cql_time))
         }
+        (Value::String(s), ColumnType::Native(NativeType::Duration)) => {
+            // TODO: add support for the following 'ISO 8601' format variants:
+            // - ISO 8601 format: P[n]Y[n]M[n]DT[n]H[n]M[n]S or P[n]W
+            // - ISO 8601 alternative format: P[YYYY]-[MM]-[DD]T[hh]:[mm]:[ss]
+            // See: https://opensource.docs.scylladb.com/stable/cql/types.html#working-with-durations
+            let duration_str = s.borrow_ref().unwrap();
+            if duration_str.is_empty() {
+                return Err(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{:?}", v),
+                    "NativeType::Duration".to_string(),
+                    Some("Duration cannot be empty".to_string()),
+                )));
+            }
+            // NOTE: we parse the duration explicitly because of the 'CqlDuration' type specifics.
+            // It stores only months, days and nanoseconds.
+            // So, we do not translate days to months and hours to days because those are ambiguous
+            let (mut months, mut days, mut nanoseconds) = (0, 0, 0);
+            let mut matches_counter = HashMap::from([
+                ("y", 0),
+                ("mo", 0),
+                ("w", 0),
+                ("d", 0),
+                ("h", 0),
+                ("m", 0),
+                ("s", 0),
+                ("ms", 0),
+                ("us", 0),
+                ("ns", 0),
+            ]);
+            for cap in DURATION_REGEX.captures_iter(&duration_str) {
+                if let Some(m) = cap.name("years") {
+                    months += m.as_str().parse::<i32>().unwrap() * 12;
+                    *matches_counter.entry("y").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("months") {
+                    months += m.as_str().parse::<i32>().unwrap();
+                    *matches_counter.entry("mo").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("weeks") {
+                    days += m.as_str().parse::<i32>().unwrap() * 7;
+                    *matches_counter.entry("w").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("days") {
+                    days += m.as_str().parse::<i32>().unwrap();
+                    *matches_counter.entry("d").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("hours") {
+                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 3_600_000_000_000;
+                    *matches_counter.entry("h").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("minutes") {
+                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 60_000_000_000;
+                    *matches_counter.entry("m").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("seconds") {
+                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000_000_000;
+                    *matches_counter.entry("s").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("millis") {
+                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000_000;
+                    *matches_counter.entry("ms").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("micros") {
+                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000;
+                    *matches_counter.entry("us").or_insert(1) += 1;
+                } else if let Some(m) = cap.name("nanoseconds") {
+                    nanoseconds += m.as_str().parse::<i64>().unwrap();
+                    *matches_counter.entry("ns").or_insert(1) += 1;
+                } else if cap.name("invalid").is_some() {
+                    return Err(CassError(CassErrorKind::QueryParamConversion(
+                        format!("{:?}", v),
+                        "NativeType::Duration".to_string(),
+                        Some("Got invalid duration value".to_string()),
+                    )));
+                }
+            }
+            if matches_counter.values().all(|&v| v == 0) {
+                return Err(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{:?}", v),
+                    "NativeType::Duration".to_string(),
+                    Some("None time units were found".to_string()),
+                )));
+            }
+            let duplicated_units: Vec<&str> = matches_counter
+                .iter()
+                .filter(|&(_, &count)| count > 1)
+                .map(|(&unit, _)| unit)
+                .collect();
+            if !duplicated_units.is_empty() {
+                return Err(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{:?}", v),
+                    "NativeType::Duration".to_string(),
+                    Some(format!(
+                        "Got multiple matches for time unit(s): {}",
+                        duplicated_units.join(", ")
+                    )),
+                )));
+            }
+            let cql_duration = CqlDuration {
+                months,
+                days,
+                nanoseconds,
+            };
+            Ok(CqlValue::Duration(cql_duration))
+        }
+
         (Value::String(s), ColumnType::Native(NativeType::Varint)) => {
             let varint_str = s.borrow_ref().unwrap();
             if !varint_str.chars().all(|c| c.is_ascii_digit()) {
@@ -415,4 +531,79 @@ fn read_fields<'a, 'b>(
         };
     }
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rstest::rstest;
+    use rune::alloc::String as RuneString;
+    use rune::runtime::Shared;
+
+    const NS_MULT: i64 = 1_000_000_000;
+
+    #[rstest]
+    #[case("45ns", 0, 0, 45)]
+    #[case("32us", 0, 0, 32 * 1_000)]
+    #[case("22ms", 0, 0, 22 * 1_000_000)]
+    #[case("15s", 0, 0, 15 * NS_MULT)]
+    #[case("2m", 0, 0, 2 * 60 * NS_MULT)]
+    #[case("4h", 0, 0, 4 * 3_600 * NS_MULT)]
+    #[case("3d", 0, 3, 0)]
+    #[case("1w", 0, 7, 0)]
+    #[case("1mo", 1, 0, 0)]
+    #[case("1y", 12, 0, 0)]
+    #[case("45m1s", 0, 0, (45 * 60 + 1) * NS_MULT)]
+    #[case("3d21h13m", 0, 3, (21 * 3_600 + 13 * 60) * NS_MULT)]
+    #[case("1y3mo2w6d13h14m23s", 15, 20, (13 * 3_600 + 14 * 60 + 23) * NS_MULT)]
+    fn test_to_scylla_value_duration_pos(
+        #[case] input: String,
+        #[case] mo: i32,
+        #[case] d: i32,
+        #[case] ns: i64,
+    ) {
+        let expected = format!("{:?}mo{:?}d{:?}ns", mo, d, ns);
+        let duration_rune_str = Value::String(
+            Shared::new(RuneString::try_from(input).expect("Failed to create RuneString"))
+                .expect("Failed to create Shared RuneString"),
+        );
+        let actual = to_scylla_value(
+            &duration_rune_str,
+            &ColumnType::Native(NativeType::Duration),
+        );
+        assert_eq!(actual.unwrap().to_string(), expected);
+    }
+
+    #[rstest]
+    #[case("")]
+    #[case(" ")]
+    #[case("\n")]
+    #[case("1")]
+    #[case("m1")]
+    #[case("1mm")]
+    #[case("1mom")]
+    #[case("fake")]
+    #[case("1d2h3m4h")]
+    fn test_to_scylla_value_duration_neg(#[case] input: String) {
+        let duration_rune_str = Value::String(
+            Shared::new(RuneString::try_from(input.clone()).expect("Failed to create RuneString"))
+                .expect("Failed to create Shared RuneString"),
+        );
+        let actual = to_scylla_value(
+            &duration_rune_str,
+            &ColumnType::Native(NativeType::Duration),
+        );
+        assert!(
+            matches!(
+                actual,
+                Err(CassError(CassErrorKind::QueryParamConversion(_, _, _)))
+            ),
+            "{}",
+            format!(
+                "Error was not raised for the {:?} input. Result: {:?}",
+                input, actual
+            )
+        );
+    }
 }
