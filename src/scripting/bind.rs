@@ -15,7 +15,7 @@ use itertools::*;
 
 fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
     // TODO: add support for the following CQL data types:
-    //       'duration' and 'tuple'.
+    //       'duration'
     match (v, typ) {
         (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => Ok(CqlValue::Boolean(*v)),
 
@@ -175,6 +175,24 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             Some(v) => to_scylla_value(v, typ),
             None => Ok(CqlValue::Empty),
         },
+        (Value::Tuple(v), ColumnType::Tuple(tuple)) => {
+            let v = v.borrow_ref().unwrap();
+            let mut elements = Vec::with_capacity(v.len());
+            for (i, current_element) in v.iter().enumerate() {
+                let element = to_scylla_value(current_element, &tuple[i])?;
+                elements.push(Some(element));
+            }
+            Ok(CqlValue::Tuple(elements))
+        }
+        (Value::Vec(v), ColumnType::Tuple(tuple)) => {
+            let v = v.borrow_ref().unwrap();
+            let mut elements = Vec::with_capacity(v.len());
+            for (i, current_element) in v.iter().enumerate() {
+                let element = to_scylla_value(current_element, &tuple[i])?;
+                elements.push(Some(element));
+            }
+            Ok(CqlValue::Tuple(elements))
+        }
         (
             Value::Vec(v),
             ColumnType::Collection {
