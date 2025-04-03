@@ -61,6 +61,7 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         datacenter,
         conf.retry_number,
         conf.retry_interval,
+        conf.validation_strategy,
     ))
 }
 

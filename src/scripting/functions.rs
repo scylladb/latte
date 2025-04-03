@@ -1,4 +1,4 @@
-use crate::scripting::cass_error::CassError;
+use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::context::Context;
 use crate::scripting::cql_types::{Int8, Uuid};
 use crate::scripting::Resources;
@@ -10,7 +10,7 @@ use rand::{Rng, SeedableRng};
 use rune::macros::{quote, MacroContext, TokenStream};
 use rune::parse::Parser;
 use rune::runtime::{Function, Mut, Ref, VmError, VmResult};
-use rune::{ast, vm_try, Value};
+use rune::{ast, vm_try, Any, Value};
 use statrs::distribution::{Normal, Uniform};
 use std::collections::HashMap;
 use std::fs::File;
@@ -251,12 +251,112 @@ pub async fn execute(ctx: Ref<Context>, cql: Ref<str>) -> Result<(), CassError> 
 }
 
 #[rune::function(instance)]
+pub async fn execute_with_validation(
+    ctx: Ref<Context>,
+    cql: Ref<str>,
+    validation_args: Vec<Value>,
+) -> Result<(), CassError> {
+    match validation_args.as_slice() {
+        // (int): expected_rows
+        [Value::Integer(expected_rows)] => {
+            ctx.execute_with_validation(
+                cql.deref(),
+                *expected_rows as u64,
+                *expected_rows as u64,
+                "",
+            )
+            .await
+        }
+        // (int, int): expected_rows_num_min, expected_rows_num_max
+        [Value::Integer(min), Value::Integer(max)] => {
+            ctx.execute_with_validation(cql.deref(), *min as u64, *max as u64, "")
+                .await
+        }
+        // (int, str): expected_rows, custom_err_msg
+        [Value::Integer(expected_rows), Value::String(custom_err_msg)] => {
+            ctx.execute_with_validation(
+                cql.deref(),
+                *expected_rows as u64,
+                *expected_rows as u64,
+                &custom_err_msg.borrow_ref().unwrap(),
+            )
+            .await
+        }
+        // (int, int, str): expected_rows_num_min, expected_rows_num_max, custom_err_msg
+        [Value::Integer(min), Value::Integer(max), Value::String(custom_err_msg)] => {
+            ctx.execute_with_validation(
+                cql.deref(),
+                *min as u64,
+                *max as u64,
+                &custom_err_msg.borrow_ref().unwrap(),
+            )
+            .await
+        }
+        _ => Err(CassError(CassErrorKind::Error(
+            "Invalid arguments for execute_with_validation".to_string(),
+        ))),
+    }
+}
+
+#[rune::function(instance)]
 pub async fn execute_prepared(
     ctx: Ref<Context>,
     key: Ref<str>,
     params: Value,
 ) -> Result<(), CassError> {
     ctx.execute_prepared(&key, params).await
+}
+
+#[rune::function(instance)]
+pub async fn execute_prepared_with_validation(
+    ctx: Ref<Context>,
+    key: Ref<str>,
+    params: Value,
+    validation_args: Vec<Value>,
+) -> Result<(), CassError> {
+    match validation_args.as_slice() {
+        // (int): expected_rows
+        [Value::Integer(expected_rows)] => {
+            ctx.execute_prepared_with_validation(
+                &key,
+                params,
+                *expected_rows as u64,
+                *expected_rows as u64,
+                "",
+            )
+            .await
+        }
+        // (int, int): expected_rows_num_min, expected_rows_num_max
+        [Value::Integer(min), Value::Integer(max)] => {
+            ctx.execute_prepared_with_validation(&key, params, *min as u64, *max as u64, "")
+                .await
+        }
+        // (int, str): expected_rows, custom_err_msg
+        [Value::Integer(expected_rows), Value::String(custom_err_msg)] => {
+            ctx.execute_prepared_with_validation(
+                &key,
+                params,
+                *expected_rows as u64,
+                *expected_rows as u64,
+                &custom_err_msg.borrow_ref().unwrap(),
+            )
+            .await
+        }
+        // (int, int, str): expected_rows_num_min, expected_rows_num_max, custom_err_msg
+        [Value::Integer(min), Value::Integer(max), Value::String(custom_err_msg)] => {
+            ctx.execute_prepared_with_validation(
+                &key,
+                params,
+                *min as u64,
+                *max as u64,
+                &custom_err_msg.borrow_ref().unwrap(),
+            )
+            .await
+        }
+        _ => Err(CassError(CassErrorKind::Error(
+            "Invalid arguments for execute_prepared_with_validation".to_string(),
+        ))),
+    }
 }
 
 #[rune::function(instance)]
@@ -286,11 +386,32 @@ pub async fn init_partition_row_distribution_preset(
     .await
 }
 
+/// This 'Partition' data type is exposed to rune scripts
+#[derive(Any)]
+pub struct Partition {
+    #[rune(get, set, copy, add_assign, sub_assign)]
+    idx: u64,
+
+    #[rune(get, copy)]
+    rows_num: u64,
+}
+
+#[rune::function(instance)]
+pub async fn get_partition_info(ctx: Ref<Context>, preset_name: Ref<str>, idx: u64) -> Partition {
+    let (idx, rows_num) = ctx
+        .get_partition_info(&preset_name, idx)
+        .await
+        .expect("failed to get partition");
+    Partition { idx, rows_num }
+}
+
 #[rune::function(instance)]
 pub async fn get_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>, idx: u64) -> u64 {
-    ctx.get_partition_idx(&preset_name, idx)
+    let (idx, _rows_num) = ctx
+        .get_partition_info(&preset_name, idx)
         .await
-        .expect("REASON")
+        .expect("failed to get partition");
+    idx
 }
 
 #[rune::function(instance)]
