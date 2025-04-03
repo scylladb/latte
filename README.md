@@ -333,6 +333,58 @@ As a result we will be able to get multi-row partitions in a requested size prop
 
 Number of presets is unlimited. Any rune script may use multiple different presets for different tables.
 
+### Validating number of rows for select queries
+
+It is possible to validate number of rows.
+
+It can be done using 2 methods.
+
+First is `execute_with_validation` which is extended version of the common `execute` function.
+Second is `execute_prepared_with_validation` which is extended version of the `execute_prepared` respectively.
+
+Each of these methods expects, as a last parameter, a vector of `Rune Value`s.
+Both support following combinations:
+- [Integer] -> Exact number of expected rows
+- [Integer, Integer] -> Range of expected rows, both values are inclusive.
+- [Integer, String] -> Exact number of expected rows and custom error message.
+- [Integer, Integer, String] -> Range of expected rows and custom error message.
+
+Example using three validation elements:
+```
+  pub async fn some_select_rune_function(db, i) {
+    ...
+    let elapsed = db.elapsed_secs();
+    let rows_min = if elapsed > 100.0 { 0 } else { 1 };
+    let rows_max = if elapsed < 150.0 { 1 } else { 0 };
+    let custom_err = "rows must have been deleted by TTL after 100s-200s";
+    db.execute_prepared_with_validation(
+        PREPARED_STATEMENT_NAME,
+        [pk],
+        [rows_min, rows_max, custom_err],
+    ).await?
+  }
+```
+
+Example using just one validation element (expected strict number of rows):
+```
+  pub async fn prepare(db) {
+    db.init_partition_row_distribution_preset(
+      "main", ROW_COUNT, ROWS_PER_PARTITION, PARTITION_SIZES).await?;
+    ...
+  }
+
+  pub async fn some_select_rune_function(db, i) {
+    let idx = i % ROW_COUNT + OFFSET;
+    let partition = db.get_partition_info("main", idx).await;
+    partition.idx += OFFSET;
+    db.execute_prepared_with_validation(
+      PREPARED_STATEMENT_NAME,
+      [pk],
+      [partition.rows_num], // precise matching to calculated partition rows number
+    ).await?
+  }
+```
+
 ### Mixing workloads
 
 It is possible to run more than one workload function at the same time.

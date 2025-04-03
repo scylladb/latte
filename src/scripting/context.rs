@@ -1,13 +1,15 @@
-use crate::config::RetryInterval;
+use crate::config::{RetryInterval, ValidationStrategy};
 use crate::error::LatteError;
-use crate::scripting::bind;
+use crate::scripting::bind::to_scylla_query_params;
 use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::connect::ClusterInfo;
 use crate::stats::session::SessionStats;
 use chrono::Utc;
 use itertools::enumerate;
+use once_cell::sync::Lazy;
 use rand::prelude::ThreadRng;
 use rand::random;
+use regex::Regex;
 use rune::runtime::{Object, Shared};
 use rune::{Any, Value};
 use scylla::client::session::Session;
@@ -24,10 +26,15 @@ use tokio::time::Instant;
 use tracing::error;
 use try_lock::TryLock;
 
+static IS_SELECT_QUERY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*select\b").unwrap());
+static IS_SELECT_COUNT_QUERY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s*select\s+count\s*\(\s*[^)]*\s*\)").unwrap());
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartitionGroup {
     pub n_rows_per_group: u64,
     pub n_partitions: u64,
+    pub n_rows_per_partition: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,8 +100,10 @@ impl RowDistributionPreset {
         }
     }
 
-    pub async fn get_partition_idx(&self, idx: u64) -> u64 {
-        self._get_partition_idx(
+    /// Returns partition index and number of expected rows in it
+    /// based on the provided stress iteration index.
+    pub async fn get_partition_info(&self, idx: u64) -> (u64, u64) {
+        self._get_partition_info(
             idx % self.total_rows,
             0,
             self.partition_groups.clone(),
@@ -103,13 +112,13 @@ impl RowDistributionPreset {
         .await
     }
 
-    async fn _get_partition_idx(
+    async fn _get_partition_info(
         &self,
         mut idx: u64,
         mut partn_offset: u64,
         partition_groups: Vec<PartitionGroup>,
         row_distributions: Vec<(RowDistribution, RowDistribution)>,
-    ) -> u64 {
+    ) -> (u64, u64) {
         if partition_groups.is_empty() {
             panic!("No partition groups found, cannot proceed");
         }
@@ -143,7 +152,7 @@ impl RowDistributionPreset {
                         + (idx - done_cycle_type_1_rows
                             + done_cycle_type_1_num * cycle_type_1.n_rows_for_left)
                             % current_partn_count;
-                    return ret;
+                    return (ret, current_partn.n_rows_per_partition);
                 }
             } else {
                 done_cycle_type_1_num = cycle_type_1.n_cycles;
@@ -167,7 +176,7 @@ impl RowDistributionPreset {
                             - done_cycle_type_2_rows
                             + done_cycle_type_2_num * cycle_type_2.n_rows_for_left)
                             % current_partn_count;
-                    return ret;
+                    return (ret, current_partn.n_rows_per_partition);
                 }
             }
             idx = idx
@@ -196,6 +205,7 @@ pub struct Context {
     stats: TryLock<SessionStats>,
     retry_number: u64,
     retry_interval: RetryInterval,
+    validation_strategy: ValidationStrategy,
     partition_row_presets: HashMap<String, RowDistributionPreset>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
@@ -222,6 +232,7 @@ impl Context {
         preferred_datacenter: String,
         retry_number: u64,
         retry_interval: RetryInterval,
+        validation_strategy: ValidationStrategy,
     ) -> Context {
         Context {
             start_time: TryLock::new(Instant::now()),
@@ -231,6 +242,7 @@ impl Context {
             stats: TryLock::new(SessionStats::new()),
             retry_number,
             retry_interval,
+            validation_strategy,
             partition_row_presets: HashMap::new(),
             load_cycle_count: 0,
             preferred_datacenter,
@@ -253,6 +265,7 @@ impl Context {
             stats: TryLock::new(SessionStats::default()),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
+            validation_strategy: self.validation_strategy,
             partition_row_presets: self.partition_row_presets.clone(),
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
@@ -516,6 +529,7 @@ impl Context {
                 partition_groups.push(PartitionGroup {
                     n_rows_per_group: partition.1 * partition.2,
                     n_partitions: partition.1,
+                    n_rows_per_partition: partition.2,
                 });
             }
         }
@@ -531,14 +545,18 @@ impl Context {
         Ok(())
     }
 
-    /// Returns a partition index based on the stress operation index and a preset of values
-    pub async fn get_partition_idx(&self, preset_name: &str, idx: u64) -> Result<u64, CassError> {
+    /// Returns a partition index and size based on the stress operation index and a preset of values
+    pub async fn get_partition_info(
+        &self,
+        preset_name: &str,
+        idx: u64,
+    ) -> Result<(u64, u64), CassError> {
         let preset = self.partition_row_presets.get(preset_name).ok_or_else(|| {
             CassError(CassErrorKind::PartitionRowPresetNotFound(
                 preset_name.to_string(),
             ))
         })?;
-        Ok(preset.get_partition_idx(idx).await)
+        Ok(preset.get_partition_info(idx).await)
     }
 
     /// Returns list of datacenters used by nodes
@@ -581,129 +599,195 @@ impl Context {
 
     /// Executes an ad-hoc CQL statement with no parameters. Does not prepare.
     pub async fn execute(&self, cql: &str) -> Result<(), CassError> {
-        match &self.session {
-            Some(session) => {
-                let statement = session
-                    .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
-                    .await
-                    .map_err(|e| CassError::prepare_error(cql, e))?;
+        self._execute(Some(cql), None, None, None, None, None).await
+    }
 
-                let mut all_pages_duration = Duration::ZERO;
-                let mut paging_state = PagingState::start();
-                let mut rows_cnt: u64 = 0;
-
-                let mut current_attempt_num = 0;
-                while current_attempt_num <= self.retry_number {
-                    let start_time = self.stats.try_lock().unwrap().start_request();
-                    let rs = session
-                        .execute_single_page(&statement, (), paging_state.clone())
-                        .await;
-                    let current_duration = Instant::now() - start_time;
-                    match rs {
-                        Ok((ref page, ref paging_state_response)) => {
-                            rows_cnt += page
-                                .clone()
-                                .into_rows_result()
-                                .map(|r| r.rows_num())
-                                .unwrap_or(0) as u64;
-                            all_pages_duration += current_duration;
-
-                            match paging_state_response.clone().into_paging_control_flow() {
-                                ControlFlow::Break(()) => {
-                                    self.stats.try_lock().unwrap().complete_request(
-                                        all_pages_duration,
-                                        Some(rows_cnt),
-                                        &rs,
-                                    );
-                                    return Ok(());
-                                }
-                                ControlFlow::Continue(new_paging_state) => {
-                                    paging_state = new_paging_state;
-                                    current_attempt_num = 0;
-                                    continue; // get next page
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let current_error =
-                                CassError::query_execution_error(cql, &[], e.clone());
-                            handle_retry_error(self, current_attempt_num, current_error).await;
-                            current_attempt_num += 1;
-                            continue;
-                        }
-                    }
-                }
-                Err(CassError::query_retries_exceeded(self.retry_number))
-            }
-            None => Err(CassError(CassErrorKind::Error(
-                "'session' is not defined".to_string(),
-            ))),
+    /// Executes an ad-hoc CQL statement with no parameters. Does not prepare.
+    /// Validates returning rows for `select` queries.
+    pub async fn execute_with_validation(
+        &self,
+        cql: &str,
+        expected_rows_num_min: u64,
+        expected_rows_num_max: u64,
+        custom_err_msg: &str,
+    ) -> Result<(), CassError> {
+        if expected_rows_num_min > expected_rows_num_max {
+            return Err(CassError(CassErrorKind::Error(format!(
+                "Expected 'minimum' ({expected_rows_num_min}) of rows number \
+                     cannot be less than 'maximum' ({expected_rows_num_max})"
+            ))));
         }
+        self._execute(
+            Some(cql),
+            None,
+            None,
+            Some(expected_rows_num_min),
+            Some(expected_rows_num_max),
+            Some(custom_err_msg),
+        )
+        .await
     }
 
     /// Executes a statement prepared and registered earlier by a call to `prepare`.
     pub async fn execute_prepared(&self, key: &str, params: Value) -> Result<(), CassError> {
-        let statement = self
-            .statements
-            .get(key)
-            .ok_or_else(|| CassError(CassErrorKind::PreparedStatementNotFound(key.to_string())))?;
+        self._execute(None, Some(key), Some(params), None, None, None)
+            .await
+    }
 
-        let params = bind::to_scylla_query_params(&params, statement.get_variable_col_specs())?;
-        match &self.session {
-            Some(session) => {
-                let mut all_pages_duration = Duration::ZERO;
-                let mut paging_state = PagingState::start();
-                let mut rows_cnt: u64 = 0;
+    /// Executes a statement prepared and registered earlier by a call to `prepare` validating
+    /// returning rows for `select` queries.
+    pub async fn execute_prepared_with_validation(
+        &self,
+        key: &str,
+        params: Value,
+        expected_rows_num_min: u64,
+        expected_rows_num_max: u64,
+        custom_err_msg: &str,
+    ) -> Result<(), CassError> {
+        if expected_rows_num_min > expected_rows_num_max {
+            return Err(CassError(CassErrorKind::Error(format!(
+                "Expected 'minimum' ({expected_rows_num_min}) of rows number \
+                     cannot be less than 'maximum' ({expected_rows_num_max})"
+            ))));
+        }
+        self._execute(
+            None,
+            Some(key),
+            Some(params),
+            Some(expected_rows_num_min),
+            Some(expected_rows_num_max),
+            Some(custom_err_msg),
+        )
+        .await
+    }
 
-                let mut current_attempt_num = 0;
-                while current_attempt_num <= self.retry_number {
-                    let start_time = self.stats.try_lock().unwrap().start_request();
-                    let rs = session
-                        .execute_single_page(statement, params.clone(), paging_state.clone())
-                        .await;
-                    let current_duration = Instant::now() - start_time;
-                    match rs {
-                        Ok((ref page, ref paging_state_response)) => {
-                            rows_cnt += page
-                                .clone()
-                                .into_rows_result()
-                                .map(|r| r.rows_num())
-                                .unwrap_or(0) as u64;
-                            all_pages_duration += current_duration;
-                            match paging_state_response.clone().into_paging_control_flow() {
-                                ControlFlow::Break(()) => {
-                                    self.stats.try_lock().unwrap().complete_request(
-                                        all_pages_duration,
-                                        Some(rows_cnt),
-                                        &rs,
-                                    );
-                                    return Ok(());
-                                }
-                                ControlFlow::Continue(new_paging_state) => {
-                                    paging_state = new_paging_state;
-                                    current_attempt_num = 0;
-                                    continue; // get next page
-                                }
-                            }
+    async fn _execute(
+        &self,
+        cql: Option<&str>,
+        key: Option<&str>,
+        params: Option<Value>,
+        expected_rows_num_min: Option<u64>,
+        expected_rows_num_max: Option<u64>,
+        custom_err_msg: Option<&str>,
+    ) -> Result<(), CassError> {
+        let session = match &self.session {
+            Some(session) => session,
+            None => {
+                return Err(CassError(CassErrorKind::Error(
+                    "'session' is not defined".to_string(),
+                )))
+            }
+        };
+        if (cql.is_some() && key.is_some()) || (cql.is_none() && key.is_none()) {
+            return Err(CassError(CassErrorKind::Error(
+                "Either 'cql' or 'key' is allowed, not both".to_string(),
+            )));
+        }
+        let stmt = if key.is_some() {
+            let key = key.expect("failed to unwrap the 'key' parameter");
+            self.statements.get(key).ok_or_else(|| {
+                CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
+            })?
+        } else {
+            let cql = cql.expect("failed to unwrap the 'cql' parameter");
+            &Arc::new(
+                session
+                    .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
+                    .await
+                    .map_err(|e| CassError::prepare_error(cql, e))?,
+            )
+        };
+        let cql = stmt.get_statement();
+        let params = match params {
+            Some(params) => to_scylla_query_params(&params, stmt.get_variable_col_specs())?,
+            None => vec![],
+        };
+        if (expected_rows_num_min.is_some() || expected_rows_num_max.is_some())
+            && !IS_SELECT_QUERY.is_match(cql)
+        {
+            return Err(CassError::query_response_validation_not_applicable_error(
+                cql, &params,
+            ));
+        }
+        let mut all_pages_duration = Duration::ZERO;
+        let mut paging_state = PagingState::start();
+        let mut rows_num: u64 = 0;
+        let mut current_attempt_num = 0;
+        while current_attempt_num <= self.retry_number {
+            let start_time = self.stats.try_lock().unwrap().start_request();
+            let rs = session
+                .execute_single_page(stmt, params.clone(), paging_state.clone())
+                .await;
+            let current_duration = Instant::now() - start_time;
+            let (page, paging_state_response) = match rs {
+                Ok((ref page, ref paging_state_response)) => (page, paging_state_response),
+                Err(e) => {
+                    let current_error = CassError::query_execution_error(cql, &params, e.clone());
+                    handle_retry_error(self, current_attempt_num, current_error).await;
+                    current_attempt_num += 1;
+                    continue; // try again the same query
+                }
+            };
+            rows_num += page
+                .clone()
+                .into_rows_result()
+                .map(|r| r.rows_num())
+                .unwrap_or(0) as u64;
+            all_pages_duration += current_duration;
+            match paging_state_response.clone().into_paging_control_flow() {
+                ControlFlow::Break(()) => {
+                    self.stats.try_lock().unwrap().complete_request(
+                        all_pages_duration,
+                        Some(rows_num),
+                        &rs,
+                    );
+                    let rows_min = match expected_rows_num_min {
+                        None => return Ok(()),
+                        Some(rows_min) => rows_min,
+                    };
+                    let (rows_max, mut rows_cnt) = (expected_rows_num_max.unwrap(), rows_num);
+                    if IS_SELECT_COUNT_QUERY.is_match(cql) {
+                        rows_cnt = page.clone().into_rows_result()?.first_row::<(i64,)>()?.0 as u64;
+                        if rows_num == 1 && rows_min <= rows_cnt && rows_cnt <= rows_max {
+                            return Ok(()); // SELECT COUNT(...) returned expected rows number
                         }
-                        Err(e) => {
-                            let current_error = CassError::query_execution_error(
-                                statement.get_statement(),
-                                &params,
-                                e.clone(),
-                            );
-                            handle_retry_error(self, current_attempt_num, current_error).await;
-                            current_attempt_num += 1;
-                            continue;
-                        }
+                    } else if rows_min <= rows_num && rows_num <= rows_max {
+                        return Ok(()); // Common 'SELECT' returned expected number of rows in total
+                    }
+                    let current_error = CassError::query_validation_error(
+                        cql,
+                        &params,
+                        rows_min,
+                        rows_max,
+                        rows_cnt,
+                        custom_err_msg.unwrap_or("").to_string(),
+                    );
+                    if self.validation_strategy == ValidationStrategy::Retry {
+                        handle_retry_error(self, current_attempt_num, current_error).await;
+                        current_attempt_num += 1;
+                        rows_num = 0; // we retry all pages, so reset cnt
+                        continue; // try again the same query
+                    } else if self.validation_strategy == ValidationStrategy::FailFast {
+                        return Err(current_error); // stop stress execution
+                    } else if self.validation_strategy == ValidationStrategy::Ignore {
+                        handle_retry_error(self, current_attempt_num, current_error).await;
+                        return Ok(()); // handle/print error and go on.
+                    } else {
+                        // should never reach this code branch
+                        return Err(CassError(CassErrorKind::Error(format!(
+                            "Unexpected value for the validation strategy param: {:?}",
+                            self.validation_strategy,
+                        ))));
                     }
                 }
-                Err(CassError::query_retries_exceeded(self.retry_number))
+                ControlFlow::Continue(new_paging_state) => {
+                    paging_state = new_paging_state;
+                    current_attempt_num = 0;
+                    continue; // get next page
+                }
             }
-            None => Err(CassError(CassErrorKind::Error(
-                "'session' is not defined".to_string(),
-            ))),
         }
+        Err(CassError::query_retries_exceeded(self.retry_number))
     }
 
     pub async fn batch_prepared(
@@ -728,7 +812,7 @@ impl Context {
             })?;
             let statement_col_specs = statement.get_variable_col_specs();
             batch.append_statement((**statement).clone());
-            batch_values.push(bind::to_scylla_query_params(
+            batch_values.push(to_scylla_query_params(
                 params
                     .get(i)
                     .expect("failed to bind rune values to the statement columns"),
@@ -912,7 +996,9 @@ mod tests {
     ) {
         for (rows_per_partitions_base, rows_per_partitions_groups) in rows_per_partitions_base_and_groups_mapping {
             let mut ctxt: Context = Context::new(
-                None, 501, "foo-dc".to_string(), 0, RetryInterval::new("1,2").expect("REASON"),
+                None, 501, "foo-dc".to_string(), 0,
+                RetryInterval::new("1,2").expect("failed to parse retry interval"),
+                ValidationStrategy::Ignore,
             );
             let preset_name = "foo_name";
 
@@ -929,14 +1015,14 @@ mod tests {
             assert_eq!(expected_partition_groups, actual_preset.partition_groups);
 
             for (idx, expected_partition_idx) in expected_idx_partition_idx_mapping.clone() {
-                let partition_idx = tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    ctxt.get_partition_idx(preset_name, idx).await
+                let (p_idx, _p_size) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                    ctxt.get_partition_info(preset_name, idx).await
                 }).expect("Failed to get partition index");
                 assert_eq!(
-                    expected_partition_idx, partition_idx, "{}",
+                    expected_partition_idx, p_idx, "{}",
                     format_args!(
                         "Using '{}' idx expected partition_idx is '{}', but got '{}'",
-                        idx, expected_partition_idx, partition_idx
+                        idx, expected_partition_idx, p_idx
                     )
                 );
             }
@@ -949,7 +1035,7 @@ mod tests {
         init_and_use_partition_row_distribution_preset(
             1000,
             vec![(25, "100:1".to_string())],
-            vec![PartitionGroup{ n_rows_per_group: 1000, n_partitions: 40}],
+            vec![PartitionGroup{ n_rows_per_group: 1000, n_partitions: 40, n_rows_per_partition: 25}],
             vec![
                 (0, 0), (1, 1), (2, 2), (39, 39), (40, 0), (41, 1), (42, 2), (999, 39),
                 (1000, 0), (1001, 1), (1039, 39), (1040, 0), (1999, 39),
@@ -965,8 +1051,8 @@ mod tests {
             1000,
             vec![(13, "100:1".to_string())],
             vec![
-                PartitionGroup{ n_rows_per_group: 988, n_partitions: 76},
-                PartitionGroup{ n_rows_per_group: 12, n_partitions: 1},
+                PartitionGroup{ n_rows_per_group: 988, n_partitions: 76, n_rows_per_partition: 13},
+                PartitionGroup{ n_rows_per_group: 12, n_partitions: 1, n_rows_per_partition: 12},
             ],
             vec![
                 // 'stress_idx/rows_count' < 1
@@ -1008,10 +1094,10 @@ mod tests {
                 (24, "50:0.25,30:0.5,20:1".to_string()),
             ],
             vec![
-                PartitionGroup{ n_rows_per_group: 408, n_partitions: 17},
-                PartitionGroup{ n_rows_per_group: 312, n_partitions: 26},
-                PartitionGroup{ n_rows_per_group: 276, n_partitions: 46},
-                PartitionGroup{ n_rows_per_group: 4, n_partitions: 1},
+                PartitionGroup{ n_rows_per_group: 408, n_partitions: 17, n_rows_per_partition: 24},
+                PartitionGroup{ n_rows_per_group: 312, n_partitions: 26, n_rows_per_partition: 12},
+                PartitionGroup{ n_rows_per_group: 276, n_partitions: 46, n_rows_per_partition: 6},
+                PartitionGroup{ n_rows_per_group: 4, n_partitions: 1, n_rows_per_partition: 4},
             ],
             vec![
                 // 1) Partitions 0-16, 24 rows each. 1 cycle of 12+16, then 16 cycles of 11+16
@@ -1060,9 +1146,9 @@ mod tests {
             10000,
             vec![(10, "49.9:1,49.9:2, 0.2:5".to_string())],
             vec![
-                PartitionGroup{ n_rows_per_group: 6640, n_partitions: 332},
-                PartitionGroup{ n_rows_per_group: 3310, n_partitions: 331},
-                PartitionGroup{ n_rows_per_group: 50, n_partitions: 1},
+                PartitionGroup{ n_rows_per_group: 6640, n_partitions: 332, n_rows_per_partition: 20},
+                PartitionGroup{ n_rows_per_group: 3310, n_partitions: 331, n_rows_per_partition: 10},
+                PartitionGroup{ n_rows_per_group: 50, n_partitions: 1, n_rows_per_partition: 50},
             ],
             vec![
                 // 1) Partitions 0-331, 20 rows each. 60 cycles of 48+24 then 80 cycles of 47:24
@@ -1091,7 +1177,9 @@ mod tests {
         let name_foo: String = "foo".to_string();
         let name_bar: String = "bar".to_string();
         let mut ctxt: Context = Context::new(
-            None, 501, "foo-dc".to_string(), 0, RetryInterval::new("1,2").expect("REASON"),
+            None, 501, "foo-dc".to_string(), 0,
+            RetryInterval::new("1,2").expect("failed to parse retry interval"),
+            ValidationStrategy::Ignore,
         );
 
         assert!(ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should be empty");
@@ -1124,7 +1212,9 @@ mod tests {
         rows_per_partitions_groups: String,
     ) {
         let mut ctxt: Context = Context::new(
-            None, 501, "foo-dc".to_string(), 0, RetryInterval::new("1,2").expect("REASON"),
+            None, 501, "foo-dc".to_string(), 0,
+            RetryInterval::new("1,2").expect("failed to parse retry interval"),
+            ValidationStrategy::Ignore,
         );
         let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
             ctxt.init_partition_row_distribution_preset(

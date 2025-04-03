@@ -3,7 +3,7 @@ use rune::alloc::fmt::TryWrite;
 use rune::runtime::{TypeInfo, VmResult};
 use rune::{vm_write, Any};
 use scylla::errors::{ExecutionError, NewSessionError, PrepareError};
-use scylla::response::query_result::IntoRowsResultError;
+use scylla::response::query_result::{FirstRowError, IntoRowsResultError};
 use scylla::value::{CqlValue, ValueOverflow};
 use std::fmt::{Display, Formatter};
 
@@ -25,6 +25,40 @@ impl CassError {
             _ => CassErrorKind::QueryExecution(query, err),
         };
         CassError(kind)
+    }
+
+    pub fn query_validation_error(
+        cql: &str,
+        params: &[CqlValue],
+        expected_rows_num_min: u64,
+        expected_rows_num_max: u64,
+        actual_rows_num: u64,
+        custom_err_msg: String,
+    ) -> CassError {
+        let query = QueryInfo {
+            cql: cql.to_string(),
+            params: params.iter().map(cql_value_obj_to_string).collect(),
+        };
+        CassError(CassErrorKind::QueryResponseValidationError(
+            query,
+            expected_rows_num_min,
+            expected_rows_num_max,
+            actual_rows_num,
+            custom_err_msg,
+        ))
+    }
+
+    pub fn query_response_validation_not_applicable_error(
+        cql: &str,
+        params: &[CqlValue],
+    ) -> CassError {
+        let query = QueryInfo {
+            cql: cql.to_string(),
+            params: params.iter().map(cql_value_obj_to_string).collect(),
+        };
+        CassError(CassErrorKind::QueryResponseValidationNotApplicableError(
+            query,
+        ))
     }
 
     pub fn query_retries_exceeded(retry_number: u64) -> CassError {
@@ -57,7 +91,11 @@ pub enum CassErrorKind {
     InvalidQueryParamsObject(TypeInfo),
     Prepare(String, PrepareError),
     Overloaded(QueryInfo, ExecutionError),
+
     QueryExecution(QueryInfo, ExecutionError),
+    QueryResponseValidationError(QueryInfo, u64, u64, u64, String),
+    QueryResponseValidationNotApplicableError(QueryInfo),
+
     Error(String),
 }
 
@@ -116,6 +154,28 @@ impl CassError {
             CassErrorKind::QueryExecution(q, e) => {
                 write!(buf, "Failed to execute query {q}: {e}")
             }
+            CassErrorKind::QueryResponseValidationError(q, emin, emax, a, err) => {
+                let custom_err = if !err.is_empty() {
+                    format!(" . Custom error msg: {err}", err = err)
+                } else {
+                    "".to_string()
+                };
+                let expected = if emin == emax {
+                    format!("'{emin}' rows")
+                } else {
+                    format!("'{emin}<=N<={emax}' rows")
+                };
+                write!(
+                    buf,
+                    "Expected {expected} in the response, but got '{a}'. Query: {q}{custom_err}"
+                )
+            }
+            CassErrorKind::QueryResponseValidationNotApplicableError(q) => {
+                write!(
+                    buf,
+                    "Response rows can be validated only for 'SELECT' queries, Query: {q}"
+                )
+            }
             CassErrorKind::Error(s) => {
                 write!(buf, "Error: {s}")
             }
@@ -139,6 +199,13 @@ impl From<ErrorStack> for CassError {
 
 impl From<ValueOverflow> for CassError {
     fn from(e: ValueOverflow) -> CassError {
+        CassError(CassErrorKind::Error(e.to_string()))
+    }
+}
+
+// FirstRowError
+impl From<FirstRowError> for CassError {
+    fn from(e: FirstRowError) -> CassError {
         CassError(CassErrorKind::Error(e.to_string()))
     }
 }

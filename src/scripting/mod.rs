@@ -25,12 +25,16 @@ fn try_install(
 ) -> Result<(), ContextError> {
     let mut context_module = Module::default();
     context_module.ty::<Context>()?;
-    context_module.function_meta(functions::execute)?;
     context_module.function_meta(functions::prepare)?;
+    context_module.function_meta(functions::execute)?;
+    context_module.function_meta(functions::execute_with_validation)?;
     context_module.function_meta(functions::execute_prepared)?;
+    context_module.function_meta(functions::execute_prepared_with_validation)?;
     context_module.function_meta(functions::batch_prepared)?;
     context_module.function_meta(functions::init_partition_row_distribution_preset)?;
     context_module.function_meta(functions::get_partition_idx)?;
+    context_module.ty::<functions::Partition>()?;
+    context_module.function_meta(functions::get_partition_info)?;
     context_module.function_meta(functions::get_datacenters)?;
     context_module.function_meta(functions::elapsed_secs)?;
 
