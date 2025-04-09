@@ -10,7 +10,7 @@ use rand::{Rng, SeedableRng};
 use rune::macros::{quote, MacroContext, TokenStream};
 use rune::parse::Parser;
 use rune::runtime::{Function, Mut, Ref, VmError, VmResult};
-use rune::{ast, vm_try, Value};
+use rune::{ast, vm_try, Any, Value};
 use statrs::distribution::{Normal, Uniform};
 use std::collections::HashMap;
 use std::fs::File;
@@ -251,12 +251,50 @@ pub async fn execute(ctx: Ref<Context>, cql: Ref<str>) -> Result<(), CassError> 
 }
 
 #[rune::function(instance)]
+pub async fn execute_with_validation(
+    ctx: Ref<Context>,
+    cql: Ref<str>,
+    // NOTE: keep interface alike for the 'execute_prepared_with_validation' func
+    //       even knowing that we fit the rune instance functions limitation of 5 params at max.
+    //       Ref: https://github.com/rune-rs/rune/issues/755
+    rows_validation: (u64, u64, Ref<str>), // (min_rows_number, max_rows_number, custom_err_msg)
+) -> Result<(), CassError> {
+    ctx.execute_with_validation(
+        cql.deref(),
+        rows_validation.0,
+        rows_validation.1,
+        &rows_validation.2,
+    )
+    .await
+}
+
+#[rune::function(instance)]
 pub async fn execute_prepared(
     ctx: Ref<Context>,
     key: Ref<str>,
     params: Value,
 ) -> Result<(), CassError> {
     ctx.execute_prepared(&key, params).await
+}
+
+#[rune::function(instance)]
+pub async fn execute_prepared_with_validation(
+    ctx: Ref<Context>,
+    key: Ref<str>,
+    params: Value,
+    // NOTE: rune instance functions support 5 params at max.
+    //       So, combine validation specific params into a tuple to fit the limits.
+    //       Ref: https://github.com/rune-rs/rune/issues/755
+    rows_validation: (u64, u64, Ref<str>), // (min_rows_number, max_rows_number, custom_err_msg)
+) -> Result<(), CassError> {
+    ctx.execute_prepared_with_validation(
+        &key,
+        params,
+        rows_validation.0,
+        rows_validation.1,
+        &rows_validation.2,
+    )
+    .await
 }
 
 #[rune::function(instance)]
@@ -286,11 +324,31 @@ pub async fn init_partition_row_distribution_preset(
     .await
 }
 
+#[derive(Any)]
+pub struct Partition {
+    #[rune(get, set, copy, add_assign, sub_assign)]
+    idx: u64,
+
+    #[rune(get, copy)]
+    size: u64,
+}
+
+#[rune::function(instance)]
+pub async fn get_partition(ctx: Ref<Context>, preset_name: Ref<str>, idx: u64) -> Partition {
+    let (idx, size) = ctx
+        .get_partition(&preset_name, idx)
+        .await
+        .expect("failed to get partition");
+    Partition { idx, size }
+}
+
 #[rune::function(instance)]
 pub async fn get_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>, idx: u64) -> u64 {
-    ctx.get_partition_idx(&preset_name, idx)
+    let (idx, _size) = ctx
+        .get_partition(&preset_name, idx)
         .await
-        .expect("REASON")
+        .expect("failed to get partition");
+    idx
 }
 
 #[rune::function(instance)]
