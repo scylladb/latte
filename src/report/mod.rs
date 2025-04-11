@@ -487,8 +487,8 @@ impl Display for RunConfigCmp<'_> {
             self.line("Datacenter", "", |conf| {
                 conf.connection.datacenter.clone().unwrap_or_default()
             }),
-            self.line("Cass. version", "", |conf| {
-                OptionDisplay(conf.cass_version.clone())
+            self.line("DB version", "", |conf| {
+                OptionDisplay(conf.db_version.clone())
             }),
             self.line("Workload", "", |conf| {
                 conf.workload
