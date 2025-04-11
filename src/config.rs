@@ -548,7 +548,7 @@ pub struct RunCommand {
     pub cluster_name: Option<String>,
 
     #[clap(skip)]
-    pub cass_version: Option<String>,
+    pub db_version: Option<String>,
 
     #[clap(skip)]
     pub id: Option<String>,

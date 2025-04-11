@@ -120,14 +120,14 @@ async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<ClusterInfo>)
     let session = scripting::connect::connect(conf).await?;
     let cluster_info = session.cluster_info().await?;
     eprintln!(
-        "info: Connected to {} running Cassandra version {}",
+        "info: Connected to '{}' cluster running {}",
         cluster_info
             .as_ref()
             .map(|c| c.name.as_str())
             .unwrap_or("unknown"),
         cluster_info
             .as_ref()
-            .map(|c| c.cassandra_version.as_str())
+            .map(|c| c.db_version.as_str())
             .unwrap_or("unknown")
     );
     Ok((session, cluster_info))
@@ -237,7 +237,7 @@ async fn run(conf: RunCommand) -> Result<()> {
     let (mut session, cluster_info) = connect(&conf.connection).await?;
     if let Some(cluster_info) = cluster_info {
         conf.cluster_name = Some(cluster_info.name);
-        conf.cass_version = Some(cluster_info.cassandra_version);
+        conf.db_version = Some(cluster_info.db_version);
     }
 
     if program.has_prepare() {

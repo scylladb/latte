@@ -262,24 +262,53 @@ impl Context {
         })
     }
 
-    /// Returns cluster metadata such as cluster name and cassandra version.
+    /// Returns cluster metadata such as cluster name and DB version.
     pub async fn cluster_info(&self) -> Result<Option<ClusterInfo>, CassError> {
-        let cql = "SELECT cluster_name, release_version FROM system.local";
-
-        match &self.session {
-            Some(session) => {
+        let session = match &self.session {
+            Some(session) => session,
+            None => {
+                return Err(CassError(CassErrorKind::Error(
+                    "'session' is not defined".to_string(),
+                )))
+            }
+        };
+        let scylla_cql = "SELECT version, build_id FROM system.versions";
+        let rs = session
+            .query_unpaged(scylla_cql, ())
+            .await
+            .map_err(|e| CassError::query_execution_error(scylla_cql, &[], e));
+        match rs {
+            Ok(rs) => {
+                let rows_result = rs.into_rows_result()?;
+                while let Ok(mut row) = rows_result.rows::<(&str, &str)>() {
+                    if let Some(Ok((scylla_version, build_id))) = row.next() {
+                        return Ok(Some(ClusterInfo {
+                            name: "".to_string(),
+                            db_version: format!(
+                                "ScyllaDB {} with build-id {}",
+                                scylla_version, build_id
+                            ),
+                        }));
+                    }
+                }
+                Ok(None)
+            }
+            Err(_e) => {
+                // NOTE: following exists in both cases
+                // and if we run against ScyllaDB then it has static '3.0.8' version.
+                let cass_cql = "SELECT cluster_name, release_version FROM system.local";
                 let rs = session
-                    .query_unpaged(cql, ())
+                    .query_unpaged(cass_cql, ())
                     .await
-                    .map_err(|e| CassError::query_execution_error(cql, &[], e));
+                    .map_err(|e| CassError::query_execution_error(cass_cql, &[], e));
                 match rs {
                     Ok(rs) => {
                         let rows_result = rs.into_rows_result()?;
-                        while let Ok(mut row) = rows_result.rows() {
-                            if let Some(Ok((name, cassandra_version))) = row.next() {
+                        while let Ok(mut row) = rows_result.rows::<(&str, &str)>() {
+                            if let Some(Ok((name, cass_version))) = row.next() {
                                 return Ok(Some(ClusterInfo {
-                                    name,
-                                    cassandra_version,
+                                    name: name.to_string(),
+                                    db_version: format!("Cassandra {}", cass_version),
                                 }));
                             }
                         }
@@ -291,9 +320,6 @@ impl Context {
                     }
                 }
             }
-            None => Err(CassError(CassErrorKind::Error(
-                "'session' is not defined".to_string(),
-            ))),
         }
     }
 

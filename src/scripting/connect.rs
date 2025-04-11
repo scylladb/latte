@@ -66,5 +66,5 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
 
 pub struct ClusterInfo {
     pub name: String,
-    pub cassandra_version: String,
+    pub db_version: String,
 }
