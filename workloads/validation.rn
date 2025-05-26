@@ -113,7 +113,7 @@ pub async fn get(db, i) { // make sure that we have only 1 row no matter how big
     let partition = db.get_partition_info("main", idx).await;
     partition.idx += OFFSET;
     let pk = hash(partition.idx);
-    let custom_err = "custom very useful err msg for the 'get' function"; // optional
+    let custom_err = "expected to get only 1 row"; // optional
     let validation_args = [1, custom_err];
     if USE_PREPARED_STATEMENTS {
         db.execute_prepared_with_validation(P_STMT.GET.NAME, [pk], validation_args).await?
@@ -128,7 +128,7 @@ pub async fn get_many(db, i) { // make sure that we have rows num as expected
     partition.idx += OFFSET;
     let pk = hash(partition.idx);
     let max_limit = partition.rows_num + 10; // make it be bigger than the expected value
-    let custom_err = "custom very useful err msg for the 'get_many' function"; // optional
+    let custom_err = `expected to get ${partition.rows_num} row(s)`; // optional
     let validation_args = [partition.rows_num, partition.rows_num, custom_err];
     if USE_PREPARED_STATEMENTS {
         db.execute_prepared_with_validation(P_STMT.GET_MANY.NAME, [pk, max_limit], validation_args).await?
@@ -143,7 +143,7 @@ pub async fn count(db, i) { // checks that 'select count' integer result equals 
     let partition = db.get_partition_info("main", idx).await;
     partition.idx += OFFSET;
     let pk = hash(partition.idx);
-    let custom_err = "custom very useful err msg for 'count' function"; // optional
+    let custom_err = `expected to get ${partition.rows_num} row(s)`; // optional
     let validation_args = [partition.rows_num, partition.rows_num, custom_err];
     if USE_PREPARED_STATEMENTS {
         db.execute_prepared_with_validation(P_STMT.COUNT.NAME, [pk], validation_args).await?

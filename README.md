@@ -385,6 +385,27 @@ Example using just one validation element (expected strict number of rows):
   }
 ```
 
+#### Validation error messages examples
+
+Standard validation error message for strict row number:
+```
+2025-05-26 15:20:22.268: [ERROR][Attempt 0/0] Expected '0' rows in the response, but got '1'. \
+  Query: "SELECT pk, ck FROM latte.validation WHERE pk = :pk LIMIT 1" with params [BigInt(4459089576838673207)]
+```
+
+Strict row number with custom error message:
+```
+2025-05-26 15:20:49.318: [ERROR][Attempt 0/0] Expected '0' rows in the response, but got '1'. \
+  Query: "SELECT pk, ck FROM latte.validation WHERE pk = :pk LIMIT 1" with params [BigInt(4459089576838673207)] . \
+  Custom error msg: expected to get only 1 row
+```
+
+Row number range without custom error message:
+```
+2025-05-26 15:21:35.281: [ERROR][Attempt 0/0] Expected '3<=N<=4' rows in the response, but got '6'. \
+  Query: "SELECT pk, ck FROM latte.validation WHERE pk = :pk LIMIT :max_limit" with params [BigInt(4459089576838673207), Int(16)]
+```
+
 ### Mixing workloads
 
 It is possible to run more than one workload function at the same time.
