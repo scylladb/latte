@@ -212,6 +212,8 @@ pub struct Context {
     #[rune(get)]
     pub preferred_datacenter: String,
     #[rune(get)]
+    pub preferred_rack: String,
+    #[rune(get)]
     pub data: Value,
     pub rng: ThreadRng,
 }
@@ -230,6 +232,7 @@ impl Context {
         session: Option<Session>,
         page_size: u64,
         preferred_datacenter: String,
+        preferred_rack: String,
         retry_number: u64,
         retry_interval: RetryInterval,
         validation_strategy: ValidationStrategy,
@@ -246,6 +249,7 @@ impl Context {
             partition_row_presets: HashMap::new(),
             load_cycle_count: 0,
             preferred_datacenter,
+            preferred_rack,
             data: Value::Object(Shared::new(Object::new()).unwrap()),
             rng: rand::thread_rng(),
         }
@@ -269,6 +273,7 @@ impl Context {
             partition_row_presets: self.partition_row_presets.clone(),
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
+            preferred_rack: self.preferred_rack.clone(),
             data: deserialized,
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             rng: rand::thread_rng(),
@@ -996,7 +1001,7 @@ mod tests {
     ) {
         for (rows_per_partitions_base, rows_per_partitions_groups) in rows_per_partitions_base_and_groups_mapping {
             let mut ctxt: Context = Context::new(
-                None, 501, "foo-dc".to_string(), 0,
+                None, 501, "foo-dc".to_string(), "foo-rack".to_string(), 0,
                 RetryInterval::new("1,2").expect("failed to parse retry interval"),
                 ValidationStrategy::Ignore,
             );
@@ -1177,7 +1182,7 @@ mod tests {
         let name_foo: String = "foo".to_string();
         let name_bar: String = "bar".to_string();
         let mut ctxt: Context = Context::new(
-            None, 501, "foo-dc".to_string(), 0,
+            None, 501, "foo-dc".to_string(), "foo-rack".to_string(), 0,
             RetryInterval::new("1,2").expect("failed to parse retry interval"),
             ValidationStrategy::Ignore,
         );
@@ -1212,7 +1217,7 @@ mod tests {
         rows_per_partitions_groups: String,
     ) {
         let mut ctxt: Context = Context::new(
-            None, 501, "foo-dc".to_string(), 0,
+            None, 501, "foo-dc".to_string(), "".to_string(), 0,
             RetryInterval::new("1,2").expect("failed to parse retry interval"),
             ValidationStrategy::Ignore,
         );
