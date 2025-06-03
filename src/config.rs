@@ -190,6 +190,10 @@ pub struct ConnectionConf {
     #[clap(long("datacenter"), required = false)]
     pub datacenter: Option<String>,
 
+    /// Rack name
+    #[clap(long("rack"), required = false)]
+    pub rack: Option<String>,
+
     /// Default CQL query consistency level
     #[clap(long("consistency"), required = false, default_value = "LOCAL_QUORUM")]
     pub consistency: Consistency,
