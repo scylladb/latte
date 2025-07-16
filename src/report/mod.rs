@@ -132,7 +132,7 @@ impl<T: Display> Quantity<T> {
         let prec = self.precision.unwrap_or_default();
         match &self.error {
             None => "".to_owned(),
-            Some(e) => format!("± {:<6.prec$}", e, prec = prec),
+            Some(e) => format!("± {e:<6.prec$}"),
         }
     }
 }
@@ -602,7 +602,7 @@ impl Display for Sample {
             let mut error_msg_bunch = String::new();
             for retry_error in &self.req_retry_errors {
                 if num_of_printed_errors < PRINT_RETRY_ERROR_LIMIT {
-                    error_msg_bunch += &format!("{}\n", retry_error);
+                    error_msg_bunch += &format!("{retry_error}\n");
                     num_of_printed_errors += 1;
                 } else {
                     break;
@@ -611,11 +611,10 @@ impl Display for Sample {
             let num_of_dropped_errors = self.req_retry_count - num_of_printed_errors;
             if num_of_dropped_errors > 0 {
                 error_msg_bunch += &format!(
-                    "...number of dropped error messages per sampling period: {}",
-                    num_of_dropped_errors,
+                    "...number of dropped error messages per sampling period: {num_of_dropped_errors}",
                 );
             }
-            writeln!(f, "{}", error_msg_bunch)?;
+            writeln!(f, "{error_msg_bunch}")?;
         }
         write!(
             f,
@@ -839,8 +838,8 @@ impl Row for PathAndSummary {
             ),
             "Rate" => self.1.rate.map(|r| r.to_string()),
             "Thrpt. [req/s]" => Some(format!("{:.0}", self.1.throughput)),
-            "P50 [ms]" => self.1.latency_p50.map(|l| format!("{:.1}", l)),
-            "P99 [ms]" => self.1.latency_p99.map(|l| format!("{:.1}", l)),
+            "P50 [ms]" => self.1.latency_p50.map(|l| format!("{l:.1}")),
+            "P99 [ms]" => self.1.latency_p99.map(|l| format!("{l:.1}")),
             _ => None,
         }
     }

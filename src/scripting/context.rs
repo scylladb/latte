@@ -303,8 +303,7 @@ impl Context {
                         return Ok(Some(ClusterInfo {
                             name: "".to_string(),
                             db_version: format!(
-                                "ScyllaDB {} with build-id {}",
-                                scylla_version, build_id
+                                "ScyllaDB {scylla_version} with build-id {build_id}",
                             ),
                         }));
                     }
@@ -326,14 +325,14 @@ impl Context {
                             if let Some(Ok((name, cass_version))) = row.next() {
                                 return Ok(Some(ClusterInfo {
                                     name: name.to_string(),
-                                    db_version: format!("Cassandra {}", cass_version),
+                                    db_version: format!("Cassandra {cass_version}"),
                                 }));
                             }
                         }
                         Ok(None)
                     }
                     Err(e) => {
-                        eprintln!("WARNING: {e}", e = e);
+                        eprintln!("WARNING: {e}");
                         Ok(None)
                     }
                 }
@@ -495,7 +494,7 @@ impl Context {
             .iter()
             .map(|(_percent, partns, rows, _multiplier)| {
                 let percent = *partns as f64 / partn_count as f64 * 100.0;
-                let percent_str = format!("{:.10}", percent);
+                let percent_str = format!("{percent:.10}");
                 let parts = percent_str.split('.').collect::<Vec<_>>();
                 if parts.len() == 2 {
                     let int_part = parts[0];
@@ -508,9 +507,9 @@ impl Context {
                             .collect::<String>();
                     }
                     if !frac_part.is_empty() {
-                        frac_part = format!(".{}", frac_part);
+                        frac_part = format!(".{frac_part}");
                     }
-                    format!("{}(~{}{}%):{}", partns, int_part, frac_part, rows)
+                    format!("{partns}(~{int_part}{frac_part}%):{rows}")
                 } else {
                     format!("{}(~{}%):{}", partns, parts[0], rows)
                 }
@@ -519,12 +518,10 @@ impl Context {
             .join(", ");
         println!(
             "info: init_partition_row_distribution_preset: \
-             preset_name={preset_name}, total_partitions={partn_count}, total_rows={total_rows}\
-            , partitions/rows -> {partitions}",
-            preset_name = preset_name,
-            partn_count = partn_count,
-            total_rows = actual_row_count,
-            partitions = partitions_str,
+             preset_name={preset_name}\
+             , total_partitions={partn_count}\
+             , total_rows={actual_row_count}\
+             , partitions/rows -> {partitions_str}",
         );
 
         // Save data for further usage
@@ -922,7 +919,7 @@ pub async fn handle_retry_error(
         ctxt.stats.try_lock().unwrap().store_retry_error(err_msg);
         tokio::time::sleep(current_retry_interval).await;
     } else {
-        eprintln!("{}", err_msg);
+        eprintln!("{err_msg}");
     }
 }
 
@@ -1016,7 +1013,7 @@ mod tests {
 
             assert!(!ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should not be empty");
             let actual_preset = ctxt.partition_row_presets.get(preset_name)
-                .unwrap_or_else(|| panic!("Preset with name '{}' was not found", preset_name));
+                .unwrap_or_else(|| panic!("Preset with name '{preset_name}' was not found"));
             assert_eq!(expected_partition_groups, actual_preset.partition_groups);
 
             for (idx, expected_partition_idx) in expected_idx_partition_idx_mapping.clone() {
@@ -1194,10 +1191,10 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             ctxt.init_partition_row_distribution_preset(
                 &name_foo, 1000, 10, "100:1").await
-        }).unwrap_or_else(|_| panic!("The '{}' preset must have been created successfully", name_foo));
+        }).unwrap_or_else(|_| panic!("The '{name_foo}' preset must have been created successfully"));
         assert!(!ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should not be empty");
         ctxt.partition_row_presets.get(&name_foo)
-            .unwrap_or_else(|| panic!("Preset with name '{}' was not found", name_foo));
+            .unwrap_or_else(|| panic!("Preset with name '{name_foo}' was not found"));
 
         let absent_bar = ctxt.partition_row_presets.get(&name_bar);
         assert_eq!(None, absent_bar, "{}", format_args!("The '{}' preset was expected to be absent", name_bar));
@@ -1205,9 +1202,9 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             ctxt.init_partition_row_distribution_preset(
                 &name_bar, 1000, 10, "90:1,10:2").await
-        }).unwrap_or_else(|_| panic!("The '{}' preset must have been created successfully", name_bar));
+        }).unwrap_or_else(|_| panic!("The '{name_bar}' preset must have been created successfully"));
         ctxt.partition_row_presets.get(&name_bar)
-            .unwrap_or_else(|| panic!("Preset with name '{}' was not found", name_bar));
+            .unwrap_or_else(|| panic!("Preset with name '{name_bar}' was not found"));
     }
 
     fn false_input_for_partition_row_distribution_preset(
@@ -1226,7 +1223,7 @@ mod tests {
                 &preset_name, row_count, rows_per_partitions_base, &rows_per_partitions_groups).await
         });
 
-        assert!(matches!(result, Err(ref _e)), "Error result was expected, but got: {:?}", result);
+        assert!(matches!(result, Err(ref _e)), "Error result was expected, but got: {result:?}");
     }
 
     #[test]

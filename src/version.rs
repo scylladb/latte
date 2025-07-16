@@ -23,6 +23,7 @@ pub fn get_version_info() -> VersionInfo {
     }
 }
 
+#[allow(clippy::uninlined_format_args)]
 pub fn format_version_info_json() -> String {
     let info = get_version_info();
     let latte_version = format!(r#""version":"{}""#, info.latte_version);

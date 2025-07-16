@@ -33,7 +33,7 @@ static DURATION_REGEX: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
-fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
+fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassError>> {
     match (v, typ) {
         (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => Ok(CqlValue::Boolean(*v)),
 
@@ -64,11 +64,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
         }
         (Value::Integer(v), ColumnType::Native(NativeType::Date)) => match (*v).try_into() {
             Ok(date) => Ok(CqlValue::Date(CqlDate(date))),
-            Err(_) => Err(CassError(CassErrorKind::QueryParamConversion(
-                format!("{:?}", v),
+            Err(_) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                format!("{v:?}"),
                 "NativeType::Date".to_string(),
                 Some("Invalid date value".to_string()),
-            ))),
+            )))),
         },
         (Value::Integer(v), ColumnType::Native(NativeType::Time)) => {
             Ok(CqlValue::Time(CqlTime(*v)))
@@ -99,9 +99,9 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             let date_str = s.borrow_ref().unwrap();
             let naive_date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|e| {
                 CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                    format!("{v:?}"),
                     "NativeType::Date".to_string(),
-                    Some(format!("{}", e)),
+                    Some(format!("{e}")),
                 ))
             })?;
             let cql_date = CqlDate::from(naive_date);
@@ -111,14 +111,14 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             let time_str = s.borrow_ref().unwrap();
             let mut time_format = "%H:%M:%S".to_string();
             if time_str.contains('.') {
-                time_format = format!("{}.%f", time_format);
+                time_format = format!("{time_format}.%f");
             }
             let naive_time = NaiveTime::parse_from_str(&time_str, &time_format).map_err(|e| {
-                CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Time".to_string(),
-                    Some(format!("{}", e)),
-                ))
+                    Some(format!("{e}")),
+                )))
             })?;
             let cql_time = CqlTime::try_from(naive_time)?;
             Ok(CqlValue::Time(cql_time))
@@ -130,11 +130,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             // See: https://opensource.docs.scylladb.com/stable/cql/types.html#working-with-durations
             let duration_str = s.borrow_ref().unwrap();
             if duration_str.is_empty() {
-                return Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Duration".to_string(),
                     Some("Duration cannot be empty".to_string()),
-                )));
+                ))));
             }
             // NOTE: we parse the duration explicitly because of the 'CqlDuration' type specifics.
             // It stores only months, days and nanoseconds.
@@ -184,19 +184,19 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
                     nanoseconds += m.as_str().parse::<i64>().unwrap();
                     *matches_counter.entry("ns").or_insert(1) += 1;
                 } else if cap.name("invalid").is_some() {
-                    return Err(CassError(CassErrorKind::QueryParamConversion(
-                        format!("{:?}", v),
+                    return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                        format!("{v:?}"),
                         "NativeType::Duration".to_string(),
                         Some("Got invalid duration value".to_string()),
-                    )));
+                    ))));
                 }
             }
             if matches_counter.values().all(|&v| v == 0) {
-                return Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Duration".to_string(),
                     Some("None time units were found".to_string()),
-                )));
+                ))));
             }
             let duplicated_units: Vec<&str> = matches_counter
                 .iter()
@@ -204,14 +204,14 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
                 .map(|(&unit, _)| unit)
                 .collect();
             if !duplicated_units.is_empty() {
-                return Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Duration".to_string(),
                     Some(format!(
                         "Got multiple matches for time unit(s): {}",
                         duplicated_units.join(", ")
                     )),
-                )));
+                ))));
             }
             let cql_duration = CqlDuration {
                 months,
@@ -224,11 +224,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
         (Value::String(s), ColumnType::Native(NativeType::Varint)) => {
             let varint_str = s.borrow_ref().unwrap();
             if !varint_str.chars().all(|c| c.is_ascii_digit()) {
-                return Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Varint".to_string(),
                     Some("Input contains non-digit characters".to_string()),
-                )));
+                ))));
             }
             let byte_vector: Vec<u8> = varint_str
                 .chars()
@@ -243,11 +243,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             let timeuuid = CqlTimeuuid::from_str(timeuuid_str.as_str());
             match timeuuid {
                 Ok(timeuuid) => Ok(CqlValue::Timeuuid(timeuuid)),
-                Err(e) => Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Timeuuid".to_string(),
-                    Some(format!("{}", e)),
-                ))),
+                    Some(format!("{e}")),
+                )))),
             }
         }
         (
@@ -259,11 +259,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
             let ipaddr = IpAddr::from_str(ipaddr_str.as_str());
             match ipaddr {
                 Ok(ipaddr) => Ok(CqlValue::Inet(ipaddr)),
-                Err(e) => Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Inet".to_string(),
-                    Some(format!("{}", e)),
-                ))),
+                    Some(format!("{e}")),
+                )))),
             }
         }
         (Value::String(s), ColumnType::Native(NativeType::Decimal)) => {
@@ -357,11 +357,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
                         map_vec.push((key, value));
                     }
                     _ => {
-                        return Err(CassError(CassErrorKind::QueryParamConversion(
-                            format!("{:?}", tuple),
+                        return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                            format!("{tuple:?}"),
                             "CollectionType::Map".to_string(),
                             None,
-                        )));
+                        ))));
                     }
                 }
             }
@@ -432,18 +432,18 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, CassError> {
                 let uuid: &Uuid = obj.downcast_borrow_ref().unwrap();
                 Ok(CqlValue::Uuid(uuid.0))
             } else {
-                Err(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{:?}", v),
+                Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                    format!("{v:?}"),
                     "NativeType::Uuid".to_string(),
                     None,
-                )))
+                ))))
             }
         }
-        (value, typ) => Err(CassError(CassErrorKind::QueryParamConversion(
-            format!("{:?}", value),
-            format!("{:?}", typ).to_string(),
+        (value, typ) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+            format!("{value:?}"),
+            format!("{typ:?}").to_string(),
             None,
-        ))),
+        )))),
     }
 }
 
@@ -451,12 +451,12 @@ fn convert_int<T: TryFrom<i64>, R>(
     value: i64,
     typ: NativeType,
     f: impl Fn(T) -> R,
-) -> Result<R, CassError> {
+) -> Result<R, Box<CassError>> {
     let converted = value.try_into().map_err(|_| {
-        CassError(CassErrorKind::ValueOutOfRange(
+        Box::new(CassError(CassErrorKind::ValueOutOfRange(
             value.to_string(),
-            format!("{:?}", typ).to_string(),
-        ))
+            format!("{typ:?}").to_string(),
+        )))
     })?;
     Ok(f(converted))
 }
@@ -466,13 +466,15 @@ fn convert_int<T: TryFrom<i64>, R>(
 pub fn to_scylla_query_params(
     params: &Value,
     types: ColumnSpecs,
-) -> Result<Vec<CqlValue>, CassError> {
+) -> Result<Vec<CqlValue>, Box<CassError>> {
     Ok(match params {
         Value::Tuple(tuple) => {
             let mut values = Vec::new();
             let tuple = tuple.borrow_ref().unwrap();
             if tuple.len() != types.len() {
-                return Err(CassError(CassErrorKind::InvalidNumberOfQueryParams));
+                return Err(Box::new(CassError(
+                    CassErrorKind::InvalidNumberOfQueryParams,
+                )));
             }
             for (v, t) in tuple.iter().zip(types.as_slice()) {
                 values.push(to_scylla_value(v, t.typ())?);
@@ -497,8 +499,8 @@ pub fn to_scylla_query_params(
             read_params(|f| obj.get(f), types.as_slice())?
         }
         other => {
-            return Err(CassError(CassErrorKind::InvalidQueryParamsObject(
-                other.type_info().unwrap(),
+            return Err(Box::new(CassError(
+                CassErrorKind::InvalidQueryParamsObject(other.type_info().unwrap()),
             )));
         }
     })
@@ -507,7 +509,7 @@ pub fn to_scylla_query_params(
 fn read_params<'a, 'b>(
     get_value: impl Fn(&str) -> Option<&'a Value>,
     params: &[ColumnSpec],
-) -> Result<Vec<CqlValue>, CassError> {
+) -> Result<Vec<CqlValue>, Box<CassError>> {
     let mut values = Vec::with_capacity(params.len());
     for column in params {
         let value = match get_value(column.name()) {
@@ -522,7 +524,7 @@ fn read_params<'a, 'b>(
 fn read_fields<'a, 'b>(
     get_value: impl Fn(&str) -> Option<&'a Value>,
     fields: &[(String, ColumnType)],
-) -> Result<Vec<(String, Option<CqlValue>)>, CassError> {
+) -> Result<Vec<(String, Option<CqlValue>)>, Box<CassError>> {
     let mut values = Vec::with_capacity(fields.len());
     for (field_name, field_type) in fields {
         if let Some(value) = get_value(field_name) {
@@ -563,7 +565,7 @@ mod tests {
         #[case] d: i32,
         #[case] ns: i64,
     ) {
-        let expected = format!("{:?}mo{:?}d{:?}ns", mo, d, ns);
+        let expected = format!("{mo:?}mo{d:?}d{ns:?}ns");
         let duration_rune_str = Value::String(
             Shared::new(RuneString::try_from(input).expect("Failed to create RuneString"))
                 .expect("Failed to create Shared RuneString"),
@@ -597,13 +599,10 @@ mod tests {
         assert!(
             matches!(
                 actual,
-                Err(CassError(CassErrorKind::QueryParamConversion(_, _, _)))
+                Err(ref box_err) if matches!(**box_err, CassError(CassErrorKind::QueryParamConversion(_, _, _)))
             ),
             "{}",
-            format!(
-                "Error was not raised for the {:?} input. Result: {:?}",
-                input, actual
-            )
+            format!("Error was not raised for the {input:?} input. Result: {actual:?}")
         );
     }
 }

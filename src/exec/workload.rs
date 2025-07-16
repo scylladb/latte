@@ -202,7 +202,7 @@ impl Program {
                 Err(Value::Any(e)) => {
                     if e.borrow_ref().unwrap().type_hash() == CassError::type_hash() {
                         let e = e.take_downcast::<CassError>().unwrap();
-                        return Err(LatteError::Cassandra(e));
+                        return Err(LatteError::Cassandra(Box::new(e)));
                     }
 
                     let e = Value::Any(e);
@@ -466,7 +466,9 @@ impl Workload {
                 state.operation_completed(function, duration);
                 Ok((cycle, end_time))
             }
-            Err(LatteError::Cassandra(CassError(CassErrorKind::Overloaded(_, _)))) => {
+            Err(LatteError::Cassandra(boxed_err))
+                if matches!(boxed_err.0, CassErrorKind::Overloaded(_, _)) =>
+            {
                 // don't stop on overload errors;
                 // they are being counted by the context stats anyways
                 state.operation_failed(function, duration);

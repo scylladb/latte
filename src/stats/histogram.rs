@@ -86,11 +86,6 @@ where
         tag: Tag,
     ) -> io::Result<()> {
         self.write_histogram(histogram, interval_start_time, interval_duration, Some(tag))
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Serialization error: {:?}", e),
-                )
-            })
+            .map_err(|e| io::Error::other(format!("Serialization error: {e:?}")))
     }
 }

@@ -150,6 +150,6 @@ mod test {
         });
         table.align(0, Alignment::Left);
         table.align(1, Alignment::Right);
-        println!("{}", table);
+        println!("{table}");
     }
 }

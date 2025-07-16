@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 pub const PRINT_RETRY_ERROR_LIMIT: u64 = 5;
 
 fn parse_f64(s: &str) -> Result<f64, String> {
-    let parsed_value: f64 = s.parse().map_err(|_| format!("Invalid float: {}", s))?;
+    let parsed_value: f64 = s.parse().map_err(|_| format!("Invalid float: {s}"))?;
     if (0.0..=1.0).contains(&parsed_value) {
         Ok(parsed_value)
     } else {
