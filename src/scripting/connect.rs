@@ -9,7 +9,7 @@ use scylla::policies::load_balancing::DefaultPolicy;
 use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session_builder::SessionBuilder;
 
-fn tls_context(conf: &&ConnectionConf) -> Result<Option<TlsContext>, CassError> {
+fn tls_context(conf: &&ConnectionConf) -> Result<Option<TlsContext>, Box<CassError>> {
     if conf.ssl {
         let mut ssl = SslContextBuilder::new(SslMethod::tls())?;
         if let Some(path) = &conf.ssl_ca_cert_file {

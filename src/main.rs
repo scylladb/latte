@@ -421,7 +421,7 @@ async fn list(conf: ListCommand) -> Result<()> {
         for r in reports {
             table.push(r);
         }
-        println!("{}", table);
+        println!("{table}");
     }
     Ok(())
 }
@@ -581,7 +581,7 @@ fn setup_logging(run_id: &str, config: &AppConfig) -> Result<WorkerGuard> {
     let log_file = match &config.log_file {
         Some(file) if file.is_absolute() => file.clone(),
         Some(file) => config.log_dir.clone().join(file),
-        None => config.log_dir.join(format!("latte-{}.log", run_id)),
+        None => config.log_dir.join(format!("latte-{run_id}.log")),
     };
     fs::create_dir_all(&config.log_dir)
         .map_err(|e| LatteError::LogFileCreate(log_file.clone(), e))?;

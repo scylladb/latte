@@ -24,8 +24,7 @@ mod scylla_date_utils {
             .ok()?;
         let resp = client
             .get(format!(
-                "https://api.github.com/repos/scylladb/scylla-rust-driver/commits/{}",
-                sha
+                "https://api.github.com/repos/scylladb/scylla-rust-driver/commits/{sha}",
             ))
             .send()
             .ok()?;
@@ -59,7 +58,7 @@ mod scylla_date_utils {
             .build()
             .ok()?;
         let resp = client
-            .get(format!("https://crates.io/api/v1/crates/{}/versions", name))
+            .get(format!("https://crates.io/api/v1/crates/{name}/versions"))
             .send()
             .ok()?;
         if !resp.status().is_success() {
@@ -135,13 +134,13 @@ fn main() {
         .unwrap_or_default();
     let mut scylla_version = scylla_pkg.version.to_string();
     let (scylla_commit_date, scylla_sha) = if scylla_source.is_empty() {
-        scylla_version = format!("{}-dev", scylla_version);
+        scylla_version = format!("{scylla_version}-dev");
         (
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             UNKNOWN.into(),
         )
     } else if scylla_source.contains("git+") {
-        scylla_version = format!("{}-dev", scylla_version);
+        scylla_version = format!("{scylla_version}-dev");
         let commit_sha = scylla_source
             .split('#')
             .nth(1)

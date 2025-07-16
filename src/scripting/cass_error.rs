@@ -63,8 +63,7 @@ impl CassError {
 
     pub fn query_retries_exceeded(retry_number: u64) -> CassError {
         CassError(CassErrorKind::QueryRetriesExceeded(format!(
-            "Max retry attempts ({}) reached",
-            retry_number
+            "Max retry attempts ({retry_number}) reached",
         )))
     }
 }
@@ -72,8 +71,7 @@ impl CassError {
 impl From<IntoRowsResultError> for CassError {
     fn from(err: IntoRowsResultError) -> Self {
         CassError(CassErrorKind::Error(format!(
-            "Failed to get result rows: {}",
-            err
+            "Failed to get result rows: {err}"
         )))
     }
 }
@@ -156,7 +154,7 @@ impl CassError {
             }
             CassErrorKind::QueryResponseValidationError(q, emin, emax, a, err) => {
                 let custom_err = if !err.is_empty() {
-                    format!(" . Custom error msg: {err}", err = err)
+                    format!(" . Custom error msg: {err}")
                 } else {
                     "".to_string()
                 };
@@ -191,9 +189,27 @@ impl Display for CassError {
     }
 }
 
+impl From<Box<CassError>> for CassError {
+    fn from(boxed_err: Box<CassError>) -> Self {
+        *boxed_err
+    }
+}
+
+impl From<ErrorStack> for Box<CassError> {
+    fn from(e: ErrorStack) -> Box<CassError> {
+        Box::new(CassError(CassErrorKind::SslConfiguration(e)))
+    }
+}
+
 impl From<ErrorStack> for CassError {
     fn from(e: ErrorStack) -> CassError {
         CassError(CassErrorKind::SslConfiguration(e))
+    }
+}
+
+impl From<ValueOverflow> for Box<CassError> {
+    fn from(e: ValueOverflow) -> Box<CassError> {
+        Box::new(CassError(CassErrorKind::Error(e.to_string())))
     }
 }
 
@@ -203,7 +219,6 @@ impl From<ValueOverflow> for CassError {
     }
 }
 
-// FirstRowError
 impl From<FirstRowError> for CassError {
     fn from(e: FirstRowError) -> CassError {
         CassError(CassErrorKind::Error(e.to_string()))
@@ -231,16 +246,14 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             keyspace,
             fields,
         } => {
-            let mut result = format!(
-                "UDT {{ keyspace: \"{}\", type_name: \"{}\", fields: [",
-                keyspace, name,
-            );
+            let mut result =
+                format!("UDT {{ keyspace: \"{keyspace}\", type_name: \"{name}\", fields: [");
             for (field_name, field_value) in fields {
                 let field_string = match field_value {
                     Some(field) => cql_value_obj_to_string(field),
                     None => String::from("None"),
                 };
-                result.push_str(&format!("(\"{}\", {}), ", field_name, field_string));
+                result.push_str(&format!("(\"{field_name}\", {field_string}), "));
             }
             if result.len() >= 2 {
                 result.truncate(result.len() - 2);
@@ -279,7 +292,7 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             for (key, value) in pairs {
                 let key_string = cql_value_obj_to_string(key);
                 let value_string = cql_value_obj_to_string(value);
-                result.push_str(&format!("({}: {}), ", key_string, value_string));
+                result.push_str(&format!("({key_string}: {value_string}), "));
             }
             if result.len() >= 2 {
                 result.truncate(result.len() - 2);
