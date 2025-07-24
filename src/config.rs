@@ -252,6 +252,9 @@ pub enum Consistency {
     #[default]
     LocalQuorum,
     EachQuorum,
+    // NOTE: 'Serial' and 'LocalSerial' are used for LWT feature
+    Serial,
+    LocalSerial,
 }
 
 impl Consistency {
@@ -266,6 +269,8 @@ impl Consistency {
             Self::LocalOne => scylla::frame::types::Consistency::LocalOne,
             Self::LocalQuorum => scylla::frame::types::Consistency::LocalQuorum,
             Self::EachQuorum => scylla::frame::types::Consistency::EachQuorum,
+            Self::Serial => scylla::frame::types::Consistency::Serial,
+            Self::LocalSerial => scylla::frame::types::Consistency::LocalSerial,
         }
     }
 }
@@ -282,6 +287,8 @@ impl ValueEnum for Consistency {
             Self::LocalOne,
             Self::LocalQuorum,
             Self::EachQuorum,
+            Self::Serial,
+            Self::LocalSerial,
         ]
     }
 
@@ -296,6 +303,8 @@ impl ValueEnum for Consistency {
             "local_one" | "localone" | "l1" => Ok(Self::LocalOne),
             "local_quorum" | "localquorum" | "lq" => Ok(Self::LocalQuorum),
             "each_quorum" | "eachquorum" | "eq" => Ok(Self::EachQuorum),
+            "serial" | "s" => Ok(Self::Serial),
+            "local_serial" | "localserial" | "ls" => Ok(Self::LocalSerial),
             s => Err(format!("Unknown consistency level {s}")),
         }
     }
@@ -311,6 +320,8 @@ impl ValueEnum for Consistency {
             Self::LocalOne => Some(PossibleValue::new("LOCAL_ONE")),
             Self::LocalQuorum => Some(PossibleValue::new("LOCAL_QUORUM")),
             Self::EachQuorum => Some(PossibleValue::new("EACH_QUORUM")),
+            Self::Serial => Some(PossibleValue::new("SERIAL")),
+            Self::LocalSerial => Some(PossibleValue::new("LOCAL_SERIAL")),
         }
     }
 }
