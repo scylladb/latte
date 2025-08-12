@@ -299,6 +299,11 @@ pub async fn execute_with_validation(
 }
 
 #[rune::function(instance)]
+pub async fn execute_with_result(ctx: Ref<Context>, cql: Ref<str>) -> Result<Value, CassError> {
+    ctx.execute_with_result(cql.deref()).await
+}
+
+#[rune::function(instance)]
 pub async fn execute_prepared(
     ctx: Ref<Context>,
     key: Ref<str>,
@@ -357,6 +362,15 @@ pub async fn execute_prepared_with_validation(
             "Invalid arguments for execute_prepared_with_validation".to_string(),
         ))),
     }
+}
+
+#[rune::function(instance)]
+pub async fn execute_prepared_with_result(
+    ctx: Ref<Context>,
+    key: Ref<str>,
+    params: Value,
+) -> Result<Value, CassError> {
+    ctx.execute_prepared_with_result(&key, params).await
 }
 
 #[rune::function(instance)]
