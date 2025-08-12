@@ -26,10 +26,17 @@ fn try_install(
     let mut context_module = Module::default();
     context_module.ty::<Context>()?;
     context_module.function_meta(functions::prepare)?;
+    context_module.function_meta(functions::signal_failure)?;
+
+    // NOTE: 1st group of query-oriented functions - without usage of prepared statements
     context_module.function_meta(functions::execute)?;
     context_module.function_meta(functions::execute_with_validation)?;
+    context_module.function_meta(functions::execute_with_result)?;
+    // NOTE: 2nd group of query-oriented functions - with usage of prepared statements
     context_module.function_meta(functions::execute_prepared)?;
     context_module.function_meta(functions::execute_prepared_with_validation)?;
+    context_module.function_meta(functions::execute_prepared_with_result)?;
+
     context_module.function_meta(functions::batch_prepared)?;
     context_module.function_meta(functions::init_partition_row_distribution_preset)?;
     context_module.function_meta(functions::get_partition_idx)?;
@@ -61,6 +68,7 @@ fn try_install(
     latte_module.function_meta(functions::uuid)?;
     latte_module.function_meta(functions::normal)?;
     latte_module.function_meta(functions::uniform)?;
+    latte_module.function_meta(functions::is_none)?;
 
     latte_module.function_meta(cql_types::i64::to_i32)?;
     latte_module.function_meta(cql_types::i64::to_i16)?;

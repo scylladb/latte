@@ -168,6 +168,22 @@ pub fn join(collection: &[Value], separator: &str) -> VmResult<String> {
     VmResult::Ok(result)
 }
 
+/// Checks whether input value is of None type or not
+#[rune::function]
+pub fn is_none(input: Value) -> bool {
+    // NOTE: The reason to add it is that following rune code doesn't work with 'None' type:
+    //   let result = if row.some_col == None { "None" } else { row.some_col };
+    // With this function it is possible to check for None the following way:
+    //   let result = if is_none(row.some_col) { "None" } else { row.some_col };
+    //   println!("DEBUG: value for some_col is '{result}'", result=result);
+    if let Value::Option(option) = input {
+        if let Ok(borrowed) = option.borrow_ref() {
+            return borrowed.is_none();
+        }
+    }
+    false
+}
+
 /// Reads a file into a string.
 #[rune::function]
 pub fn read_to_string(filename: &str) -> io::Result<String> {
@@ -246,7 +262,12 @@ pub async fn prepare(mut ctx: Mut<Context>, key: Ref<str>, cql: Ref<str>) -> Res
 }
 
 #[rune::function(instance)]
-pub async fn execute(ctx: Ref<Context>, cql: Ref<str>) -> Result<(), CassError> {
+pub async fn signal_failure(ctx: Ref<Context>, message: Ref<str>) -> Result<(), CassError> {
+    ctx.signal_failure(message.deref()).await
+}
+
+#[rune::function(instance)]
+pub async fn execute(ctx: Ref<Context>, cql: Ref<str>) -> Result<Value, CassError> {
     ctx.execute(cql.deref()).await
 }
 
@@ -255,7 +276,7 @@ pub async fn execute_with_validation(
     ctx: Ref<Context>,
     cql: Ref<str>,
     validation_args: Vec<Value>,
-) -> Result<(), CassError> {
+) -> Result<Value, CassError> {
     match validation_args.as_slice() {
         // (int): expected_rows
         [Value::Integer(expected_rows)] => {
@@ -299,11 +320,16 @@ pub async fn execute_with_validation(
 }
 
 #[rune::function(instance)]
+pub async fn execute_with_result(ctx: Ref<Context>, cql: Ref<str>) -> Result<Value, CassError> {
+    ctx.execute_with_result(cql.deref()).await
+}
+
+#[rune::function(instance)]
 pub async fn execute_prepared(
     ctx: Ref<Context>,
     key: Ref<str>,
     params: Value,
-) -> Result<(), CassError> {
+) -> Result<Value, CassError> {
     ctx.execute_prepared(&key, params).await
 }
 
@@ -313,7 +339,7 @@ pub async fn execute_prepared_with_validation(
     key: Ref<str>,
     params: Value,
     validation_args: Vec<Value>,
-) -> Result<(), CassError> {
+) -> Result<Value, CassError> {
     match validation_args.as_slice() {
         // (int): expected_rows
         [Value::Integer(expected_rows)] => {
@@ -357,6 +383,15 @@ pub async fn execute_prepared_with_validation(
             "Invalid arguments for execute_prepared_with_validation".to_string(),
         ))),
     }
+}
+
+#[rune::function(instance)]
+pub async fn execute_prepared_with_result(
+    ctx: Ref<Context>,
+    key: Ref<str>,
+    params: Value,
+) -> Result<Value, CassError> {
+    ctx.execute_prepared_with_result(&key, params).await
 }
 
 #[rune::function(instance)]

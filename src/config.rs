@@ -235,19 +235,27 @@ pub struct ConnectionConf {
     )]
     pub retry_interval: RetryInterval,
 
-    /// Defines the strategy for 'select' queries validation errors.
-    /// Gets applied when 'execute_prepared_with_validation'
-    /// or 'execute_with_validation' context methods are used in rune scripts.
-    #[clap(long("validation-strategy"), required = false, default_value = "retry")]
+    /// Validation strategy is used in the following cases:
+    /// - Defines the strategy for 'select' queries validation errors.
+    ///   Gets applied when 'execute_prepared_with_validation'
+    ///   or 'execute_with_validation' context methods are used in rune scripts.
+    /// - Defines the behavior of latte when 'signal_failure' context method
+    ///   is executed. So, having "retry" validation strategy it will retry
+    ///   whole rune function using common retry configs for count and interval.
+    #[clap(
+        long("validation-strategy"),
+        required = false,
+        default_value = "fail-fast"
+    )]
     pub validation_strategy: ValidationStrategy,
 }
 
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
 pub enum ValidationStrategy {
-    #[default]
     Retry, // Retry 'select' queries if rows number is unexpected.
+    #[default]
     FailFast, // Stop stress execution right after any 'select' query validation fails.
-    Ignore,   // Ignore validation errors - face, print, go on.
+    Ignore, // Ignore validation errors - face, print, go on.
 }
 
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -10,14 +10,16 @@ use once_cell::sync::Lazy;
 use rand::prelude::ThreadRng;
 use rand::random;
 use regex::Regex;
-use rune::runtime::{Object, Shared};
+use rune::alloc::vec::Vec as RuneAllocVec;
+use rune::alloc::String as RuneString;
+use rune::runtime::{Object, OwnedTuple, Shared, Vec as RuneVec};
 use rune::{Any, Value};
 use scylla::client::session::Session;
 use scylla::response::PagingState;
 use scylla::statement::batch::{Batch, BatchType};
 use scylla::statement::prepared::PreparedStatement;
 use scylla::statement::unprepared::Statement;
-use scylla::value::CqlValue;
+use scylla::value::{CqlValue, Row};
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -192,6 +194,235 @@ impl RowDistributionPreset {
     }
 }
 
+/// Converts a Scylla CqlValue to a Rune Value
+fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
+    match value {
+        CqlValue::Ascii(s) | CqlValue::Text(s) => Ok(Value::String(Shared::new(
+            RuneString::try_from(s.clone()).expect("Failed to create RuneString"),
+        )?)),
+        CqlValue::Boolean(b) => Ok(Value::Bool(*b)),
+        CqlValue::TinyInt(i) => Ok(Value::Integer(*i as i64)),
+        CqlValue::SmallInt(i) => Ok(Value::Integer(*i as i64)),
+        CqlValue::Int(i) => Ok(Value::Integer(*i as i64)),
+        CqlValue::BigInt(i) => Ok(Value::Integer(*i)),
+        CqlValue::Float(f) => Ok(Value::Float(*f as f64)),
+        CqlValue::Double(f) => Ok(Value::Float(*f)),
+        CqlValue::Counter(c) => Ok(Value::Integer(c.0)),
+        CqlValue::Timestamp(ts) => Ok(Value::Integer(ts.0)),
+        CqlValue::Date(date) => Ok(Value::Integer(date.0 as i64)),
+        CqlValue::Time(time) => Ok(Value::Integer(time.0)),
+        CqlValue::Blob(blob) => {
+            let mut rune_vec = RuneVec::new();
+            for byte in blob {
+                rune_vec.push(Value::Byte(*byte)).map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to push byte to Rune vector".to_string(),
+                    )))
+                })?;
+            }
+            Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared vector for blob".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::Uuid(uuid) => Ok(Value::String(
+            Shared::new(
+                RuneString::try_from(uuid.to_string())
+                    .expect("Failed to create RuneString for UUID"),
+            )
+            .map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared string for UUID".to_string(),
+                )))
+            })?,
+        )),
+        CqlValue::Timeuuid(timeuuid) => Ok(Value::String(
+            Shared::new(
+                RuneString::try_from(timeuuid.to_string())
+                    .expect("Failed to create RuneString for TimeUuid"),
+            )
+            .map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared string for TimeUuid".to_string(),
+                )))
+            })?,
+        )),
+        CqlValue::Inet(addr) => Ok(Value::String(
+            Shared::new(
+                RuneString::try_from(addr.to_string())
+                    .expect("Failed to create RuneString for IpAddr"),
+            )
+            .map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared string for IpAddr".to_string(),
+                )))
+            })?,
+        )),
+        CqlValue::List(list) => {
+            let mut rune_vec = RuneVec::new();
+            for item in list {
+                rune_vec.push(cql_value_to_rune_value(item)?).map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to push to Rune vector".to_string(),
+                    )))
+                })?;
+            }
+            Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared vector".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::Set(set) => {
+            let mut rune_vec = RuneVec::new();
+            for item in set {
+                rune_vec.push(cql_value_to_rune_value(item)?).map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to push to Rune vector".to_string(),
+                    )))
+                })?;
+            }
+            Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared vector".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::Map(map) => {
+            let mut rune_vec = RuneVec::new();
+            for (key, value) in map {
+                let mut pair = RuneAllocVec::new();
+                pair.try_push(cql_value_to_rune_value(key)?)?;
+                pair.try_push(cql_value_to_rune_value(value)?)?;
+                rune_vec
+                    .push(Value::Tuple(Shared::new(OwnedTuple::try_from(pair)?)?))
+                    .map_err(|_| {
+                        Box::new(CassError(CassErrorKind::Error(
+                            "Failed to push map key-value pair to the Rune vector".to_string(),
+                        )))
+                    })?;
+            }
+            Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared Rune vector".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::UserDefinedType { fields, .. } => {
+            let mut rune_obj = Object::new();
+            for (field_name, field_value) in fields {
+                rune_obj
+                    .insert(
+                        RuneString::try_from(field_name.clone())
+                            .expect("Failed to create RuneString"),
+                        cql_value_to_rune_value(field_value.as_ref().unwrap())?,
+                    )
+                    .map_err(|_| {
+                        Box::new(CassError(CassErrorKind::Error(
+                            "Failed to insert UDT field into Rune object".to_string(),
+                        )))
+                    })?;
+            }
+            Ok(Value::Object(Shared::new(rune_obj).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared object for UDT".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::Tuple(tuple) => {
+            let mut rune_vec = RuneVec::new();
+            for item in tuple {
+                rune_vec
+                    .push(cql_value_to_rune_value(item.as_ref().unwrap())?)
+                    .map_err(|_| {
+                        Box::new(CassError(CassErrorKind::Error(
+                            "Failed to push tuple item to Rune vector".to_string(),
+                        )))
+                    })?;
+            }
+            Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared vector for tuple".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::Varint(varint) => Ok(Value::String(
+            Shared::new(
+                RuneString::try_from(
+                    String::from_utf8(varint.clone().into_signed_bytes_be())
+                        .expect("Invalid UTF-8"),
+                )
+                .expect("Failed to create RuneString"),
+            )
+            .map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared string for Varint".to_string(),
+                )))
+            })?,
+        )),
+        CqlValue::Decimal(decimal) => {
+            let (mantissa_be, scale) = &decimal.clone().into_signed_be_bytes_and_exponent();
+            let dec = rust_decimal::Decimal::try_new(
+                i64::from_be_bytes(mantissa_be.as_slice().try_into().unwrap()),
+                u32::try_from(*scale)?,
+            )
+            .unwrap();
+            Ok(Value::String(
+                Shared::new(
+                    RuneString::try_from(dec.to_string()).expect("Failed to create RuneString"),
+                )
+                .map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to create shared string for Decimal".to_string(),
+                    )))
+                })?,
+            ))
+        }
+        CqlValue::Duration(duration) => {
+            // TODO: update the logic for duration to provide also a duration-like string such as "1h2m3s"
+            let mut rune_obj = Object::new();
+            rune_obj
+                .insert(
+                    RuneString::try_from("months").expect("Failed to create RuneString"),
+                    Value::Integer(duration.months as i64),
+                )
+                .map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to insert months into duration object".to_string(),
+                    )))
+                })?;
+            rune_obj
+                .insert(
+                    RuneString::try_from("days").expect("Failed to create RuneString"),
+                    Value::Integer(duration.days as i64),
+                )
+                .map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to insert days into duration object".to_string(),
+                    )))
+                })?;
+            rune_obj
+                .insert(
+                    RuneString::try_from("nanoseconds").expect("Failed to create RuneString"),
+                    Value::Integer(duration.nanoseconds),
+                )
+                .map_err(|_| {
+                    Box::new(CassError(CassErrorKind::Error(
+                        "Failed to insert nanoseconds into duration object".to_string(),
+                    )))
+                })?;
+            Ok(Value::Object(Shared::new(rune_obj).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared object for Duration".to_string(),
+                )))
+            })?))
+        }
+        CqlValue::Empty => Ok(Value::Option(Shared::new(None)?)),
+        &_ => todo!(), // unexpected, should never be reached
+    }
+}
+
 /// This is the main object that a workload script uses to interface with the outside world.
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
@@ -203,9 +434,9 @@ pub struct Context {
     page_size: u64,
     statements: HashMap<String, Arc<PreparedStatement>>,
     stats: TryLock<SessionStats>,
-    retry_number: u64,
+    pub retry_number: u64,
     retry_interval: RetryInterval,
-    validation_strategy: ValidationStrategy,
+    pub validation_strategy: ValidationStrategy,
     partition_row_presets: HashMap<String, RowDistributionPreset>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
@@ -599,9 +830,15 @@ impl Context {
         }
     }
 
+    pub async fn signal_failure(&self, message: &str) -> Result<(), CassError> {
+        let err = CassError(CassErrorKind::CustomError(message.to_string()));
+        Err(err)
+    }
+
     /// Executes an ad-hoc CQL statement with no parameters. Does not prepare.
-    pub async fn execute(&self, cql: &str) -> Result<(), CassError> {
-        self._execute(Some(cql), None, None, None, None, None).await
+    pub async fn execute(&self, cql: &str) -> Result<Value, CassError> {
+        self._execute(Some(cql), None, None, None, None, None, false)
+            .await
     }
 
     /// Executes an ad-hoc CQL statement with no parameters. Does not prepare.
@@ -612,7 +849,7 @@ impl Context {
         expected_rows_num_min: u64,
         expected_rows_num_max: u64,
         custom_err_msg: &str,
-    ) -> Result<(), CassError> {
+    ) -> Result<Value, CassError> {
         if expected_rows_num_min > expected_rows_num_max {
             return Err(CassError(CassErrorKind::Error(format!(
                 "Expected 'minimum' ({expected_rows_num_min}) of rows number \
@@ -626,13 +863,14 @@ impl Context {
             Some(expected_rows_num_min),
             Some(expected_rows_num_max),
             Some(custom_err_msg),
+            false,
         )
         .await
     }
 
     /// Executes a statement prepared and registered earlier by a call to `prepare`.
-    pub async fn execute_prepared(&self, key: &str, params: Value) -> Result<(), CassError> {
-        self._execute(None, Some(key), Some(params), None, None, None)
+    pub async fn execute_prepared(&self, key: &str, params: Value) -> Result<Value, CassError> {
+        self._execute(None, Some(key), Some(params), None, None, None, false)
             .await
     }
 
@@ -645,7 +883,7 @@ impl Context {
         expected_rows_num_min: u64,
         expected_rows_num_max: u64,
         custom_err_msg: &str,
-    ) -> Result<(), CassError> {
+    ) -> Result<Value, CassError> {
         if expected_rows_num_min > expected_rows_num_max {
             return Err(CassError(CassErrorKind::Error(format!(
                 "Expected 'minimum' ({expected_rows_num_min}) of rows number \
@@ -659,10 +897,28 @@ impl Context {
             Some(expected_rows_num_min),
             Some(expected_rows_num_max),
             Some(custom_err_msg),
+            false,
         )
         .await
     }
 
+    /// Executes an ad-hoc CQL statement and returns the result data.
+    pub async fn execute_with_result(&self, cql: &str) -> Result<Value, CassError> {
+        self._execute(Some(cql), None, None, None, None, None, true)
+            .await
+    }
+
+    /// Executes a statement prepared and registered earlier by a call to `prepare` and returns the result data.
+    pub async fn execute_prepared_with_result(
+        &self,
+        key: &str,
+        params: Value,
+    ) -> Result<Value, CassError> {
+        self._execute(None, Some(key), Some(params), None, None, None, true)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn _execute(
         &self,
         cql: Option<&str>,
@@ -671,7 +927,8 @@ impl Context {
         expected_rows_num_min: Option<u64>,
         expected_rows_num_max: Option<u64>,
         custom_err_msg: Option<&str>,
-    ) -> Result<(), CassError> {
+        process_and_return_data: bool,
+    ) -> Result<Value, CassError> {
         let session = match &self.session {
             Some(session) => session,
             None => {
@@ -710,8 +967,18 @@ impl Context {
                 cql, &params,
             ));
         }
+        if (expected_rows_num_min.is_some() || expected_rows_num_max.is_some())
+            && process_and_return_data
+        {
+            return Err(CassError(CassErrorKind::Error(
+                "Row count validation and rows data processing are not supported together"
+                    .to_string(),
+            )));
+        }
         let mut all_pages_duration = Duration::ZERO;
         let mut paging_state = PagingState::start();
+        // NOTE: outer vector is container of rows, inner one is container of row column data
+        let mut all_rows: Vec<Vec<(String, CqlValue)>> = Vec::new();
         let mut rows_num: u64 = 0;
         let mut current_attempt_num = 0;
         while current_attempt_num <= self.retry_number {
@@ -729,11 +996,36 @@ impl Context {
                     continue; // try again the same query
                 }
             };
-            rows_num += page
-                .clone()
-                .into_rows_result()
-                .map(|r| r.rows_num())
-                .unwrap_or(0) as u64;
+            let rows_result = page.clone().into_rows_result();
+            if process_and_return_data {
+                let rows_result_unwrapped = rows_result?;
+                let column_specs = rows_result_unwrapped.column_specs();
+                let row_iterator = rows_result_unwrapped.rows::<Row>()?;
+                for row_result in row_iterator {
+                    let mut current_row_data: Vec<(String, CqlValue)> = vec![];
+                    match row_result {
+                        Ok(row) => {
+                            for (index, cql_value) in row.columns.iter().enumerate() {
+                                let col_name = column_specs
+                                    .iter()
+                                    .nth(index)
+                                    .map(|spec| spec.name())
+                                    .unwrap_or_else(|| "unknown");
+                                current_row_data.push((
+                                    col_name.to_string(),
+                                    cql_value.clone().unwrap_or(CqlValue::Empty),
+                                ));
+                            }
+                        }
+                        Err(_) => {
+                            break; // Exit the loop if row_result is invalid
+                        }
+                    }
+                    all_rows.push(current_row_data);
+                }
+            } else {
+                rows_num += rows_result.map(|r| r.rows_num()).unwrap_or(0) as u64;
+            }
             all_pages_duration += current_duration;
             match paging_state_response.clone().into_paging_control_flow() {
                 ControlFlow::Break(()) => {
@@ -742,43 +1034,83 @@ impl Context {
                         Some(rows_num),
                         &rs,
                     );
-                    let rows_min = match expected_rows_num_min {
-                        None => return Ok(()),
-                        Some(rows_min) => rows_min,
-                    };
-                    let (rows_max, mut rows_cnt) = (expected_rows_num_max.unwrap(), rows_num);
-                    if IS_SELECT_COUNT_QUERY.is_match(cql) {
-                        rows_cnt = page.clone().into_rows_result()?.first_row::<(i64,)>()?.0 as u64;
-                        if rows_num == 1 && rows_min <= rows_cnt && rows_cnt <= rows_max {
-                            return Ok(()); // SELECT COUNT(...) returned expected rows number
+                    if process_and_return_data {
+                        // Convert the collected rows to Rune values
+                        let mut rune_rows = RuneVec::new();
+                        for current_row_vec in all_rows {
+                            let mut row_obj = Object::new();
+                            for (col_name, col_value) in current_row_vec {
+                                row_obj
+                                    .insert(
+                                        RuneString::try_from(col_name)
+                                            .expect("Failed to create RuneString for column name"),
+                                        cql_value_to_rune_value(&col_value)?,
+                                    )
+                                    .map_err(|_| {
+                                        CassError(CassErrorKind::Error(
+                                            "Failed to insert column into row object".to_string(),
+                                        ))
+                                    })?;
+                            }
+                            rune_rows
+                                .push(Value::Object(Shared::new(row_obj).map_err(|_| {
+                                    CassError(CassErrorKind::Error(
+                                        "Failed to create shared row object".to_string(),
+                                    ))
+                                })?))
+                                .map_err(|_| {
+                                    CassError(CassErrorKind::Error(
+                                        "Failed to push row to result vector".to_string(),
+                                    ))
+                                })?;
                         }
-                    } else if rows_min <= rows_num && rows_num <= rows_max {
-                        return Ok(()); // Common 'SELECT' returned expected number of rows in total
-                    }
-                    let current_error = CassError::query_validation_error(
-                        cql,
-                        &params,
-                        rows_min,
-                        rows_max,
-                        rows_cnt,
-                        custom_err_msg.unwrap_or("").to_string(),
-                    );
-                    if self.validation_strategy == ValidationStrategy::Retry {
-                        handle_retry_error(self, current_attempt_num, current_error).await;
-                        current_attempt_num += 1;
-                        rows_num = 0; // we retry all pages, so reset cnt
-                        continue; // try again the same query
-                    } else if self.validation_strategy == ValidationStrategy::FailFast {
-                        return Err(current_error); // stop stress execution
-                    } else if self.validation_strategy == ValidationStrategy::Ignore {
-                        handle_retry_error(self, current_attempt_num, current_error).await;
-                        return Ok(()); // handle/print error and go on.
+
+                        return Ok(Value::Vec(Shared::new(rune_rows).map_err(|_| {
+                            CassError(CassErrorKind::Error(
+                                "Failed to create shared result vector".to_string(),
+                            ))
+                        })?));
                     } else {
-                        // should never reach this code branch
-                        return Err(CassError(CassErrorKind::Error(format!(
-                            "Unexpected value for the validation strategy param: {:?}",
-                            self.validation_strategy,
-                        ))));
+                        let empty_rune_vec = Value::Vec(Shared::new(RuneVec::new())?);
+                        let rows_min = match expected_rows_num_min {
+                            None => return Ok(empty_rune_vec),
+                            Some(rows_min) => rows_min,
+                        };
+                        let (rows_max, mut rows_cnt) = (expected_rows_num_max.unwrap(), rows_num);
+                        if IS_SELECT_COUNT_QUERY.is_match(cql) {
+                            rows_cnt =
+                                page.clone().into_rows_result()?.first_row::<(i64,)>()?.0 as u64;
+                            if rows_num == 1 && rows_min <= rows_cnt && rows_cnt <= rows_max {
+                                return Ok(empty_rune_vec); // SELECT COUNT(...) returned expected rows number
+                            }
+                        } else if rows_min <= rows_num && rows_num <= rows_max {
+                            return Ok(empty_rune_vec); // Common 'SELECT' returned expected number of rows in total
+                        }
+                        let current_error = CassError::query_validation_error(
+                            cql,
+                            &params,
+                            rows_min,
+                            rows_max,
+                            rows_cnt,
+                            custom_err_msg.unwrap_or("").to_string(),
+                        );
+                        if self.validation_strategy == ValidationStrategy::Retry {
+                            handle_retry_error(self, current_attempt_num, current_error).await;
+                            current_attempt_num += 1;
+                            rows_num = 0; // we retry all pages, so reset cnt
+                            continue; // try again the same query
+                        } else if self.validation_strategy == ValidationStrategy::FailFast {
+                            return Err(current_error); // stop stress execution
+                        } else if self.validation_strategy == ValidationStrategy::Ignore {
+                            handle_retry_error(self, current_attempt_num, current_error).await;
+                            return Ok(empty_rune_vec); // handle/print error and go on.
+                        } else {
+                            // should never reach this code branch
+                            return Err(CassError(CassErrorKind::Error(format!(
+                                "Unexpected value for the validation strategy param: {:?}",
+                                self.validation_strategy,
+                            ))));
+                        }
                     }
                 }
                 ControlFlow::Continue(new_paging_state) => {
