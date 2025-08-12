@@ -1,8 +1,11 @@
 use openssl::error::ErrorStack;
+use rune::alloc::error::Error as RuneAllocError;
 use rune::alloc::fmt::TryWrite;
 use rune::runtime::{TypeInfo, VmResult};
 use rune::{vm_write, Any};
-use scylla::errors::{ExecutionError, NewSessionError, PrepareError};
+use scylla::errors::{
+    DeserializationError, ExecutionError, NewSessionError, PrepareError, RowsError,
+};
 use scylla::response::query_result::{FirstRowError, IntoRowsResultError};
 use scylla::value::{CqlValue, ValueOverflow};
 use std::fmt::{Display, Formatter};
@@ -95,6 +98,7 @@ pub enum CassErrorKind {
     QueryResponseValidationNotApplicableError(QueryInfo),
 
     Error(String),
+    CustomError(String),
 }
 
 #[derive(Debug)]
@@ -177,6 +181,9 @@ impl CassError {
             CassErrorKind::Error(s) => {
                 write!(buf, "Error: {s}")
             }
+            CassErrorKind::CustomError(s) => {
+                write!(buf, "CustomError: {s}")
+            }
         }
     }
 }
@@ -222,6 +229,42 @@ impl From<ValueOverflow> for CassError {
 impl From<FirstRowError> for CassError {
     fn from(e: FirstRowError) -> CassError {
         CassError(CassErrorKind::Error(e.to_string()))
+    }
+}
+
+impl From<DeserializationError> for CassError {
+    fn from(e: DeserializationError) -> CassError {
+        CassError(CassErrorKind::Error(e.to_string()))
+    }
+}
+
+impl From<RowsError> for CassError {
+    fn from(e: RowsError) -> CassError {
+        CassError(CassErrorKind::Error(e.to_string()))
+    }
+}
+
+impl From<RowsError> for Box<CassError> {
+    fn from(e: RowsError) -> std::boxed::Box<CassError> {
+        Box::new(CassError(CassErrorKind::Error(e.to_string())))
+    }
+}
+
+impl From<RuneAllocError> for CassError {
+    fn from(e: RuneAllocError) -> CassError {
+        CassError(CassErrorKind::Error(e.to_string()))
+    }
+}
+
+impl From<RuneAllocError> for Box<CassError> {
+    fn from(e: RuneAllocError) -> std::boxed::Box<CassError> {
+        Box::new(CassError(CassErrorKind::Error(e.to_string())))
+    }
+}
+
+impl From<std::num::TryFromIntError> for Box<CassError> {
+    fn from(e: std::num::TryFromIntError) -> std::boxed::Box<CassError> {
+        Box::new(CassError(CassErrorKind::Error(e.to_string())))
     }
 }
 
