@@ -194,9 +194,19 @@ pub struct ConnectionConf {
     #[clap(long("rack"), required = false)]
     pub rack: Option<String>,
 
-    /// Default CQL query consistency level
+    /// CQL query consistency level.
+    /// 'SERIAL' and 'LOCAL_SERIAL' values are compatible only with SELECT statements
+    /// and make Scylla use Paxos consensus algorithm
     #[clap(long("consistency"), required = false, default_value = "LOCAL_QUORUM")]
     pub consistency: Consistency,
+
+    /// Serial consistency level for conditional (LWT) queries
+    #[clap(
+        long("serial-consistency"),
+        required = false,
+        default_value = "LOCAL_SERIAL"
+    )]
+    pub serial_consistency: SerialConsistency,
 
     #[clap(
         long("request-timeout"),
@@ -252,13 +262,14 @@ pub enum Consistency {
     #[default]
     LocalQuorum,
     EachQuorum,
-    // NOTE: 'Serial' and 'LocalSerial' are used for LWT feature
+    // NOTE: 'Serial' and 'LocalSerial' values may be used in SELECT statements
+    // to make them use Paxos consensus algorithm.
     Serial,
     LocalSerial,
 }
 
 impl Consistency {
-    pub fn scylla_consistency(&self) -> scylla::frame::types::Consistency {
+    pub fn consistency(&self) -> scylla::frame::types::Consistency {
         match self {
             Self::Any => scylla::frame::types::Consistency::Any,
             Self::One => scylla::frame::types::Consistency::One,
@@ -320,6 +331,43 @@ impl ValueEnum for Consistency {
             Self::LocalOne => Some(PossibleValue::new("LOCAL_ONE")),
             Self::LocalQuorum => Some(PossibleValue::new("LOCAL_QUORUM")),
             Self::EachQuorum => Some(PossibleValue::new("EACH_QUORUM")),
+            Self::Serial => Some(PossibleValue::new("SERIAL")),
+            Self::LocalSerial => Some(PossibleValue::new("LOCAL_SERIAL")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SerialConsistency {
+    Serial,
+    #[default]
+    LocalSerial,
+}
+
+impl SerialConsistency {
+    pub fn serial_consistency(&self) -> scylla::frame::types::SerialConsistency {
+        match self {
+            Self::Serial => scylla::frame::types::SerialConsistency::Serial,
+            Self::LocalSerial => scylla::frame::types::SerialConsistency::LocalSerial,
+        }
+    }
+}
+
+impl ValueEnum for SerialConsistency {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Serial, Self::LocalSerial]
+    }
+
+    fn from_str(s: &str, _ignore_case: bool) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "serial" | "s" => Ok(Self::Serial),
+            "local_serial" | "localserial" | "ls" => Ok(Self::LocalSerial),
+            s => Err(format!("Unknown serial consistency level {s}")),
+        }
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        match self {
             Self::Serial => Some(PossibleValue::new("SERIAL")),
             Self::LocalSerial => Some(PossibleValue::new("LOCAL_SERIAL")),
         }

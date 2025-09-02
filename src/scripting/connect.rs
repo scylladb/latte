@@ -51,7 +51,8 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         panic!("Datacenter must also be defined when rack is defined");
     }
     let profile = ExecutionProfile::builder()
-        .consistency(conf.consistency.scylla_consistency())
+        .consistency(conf.consistency.consistency())
+        .serial_consistency(Some(conf.serial_consistency.serial_consistency()))
         .load_balancing_policy(policy_builder.build())
         .request_timeout(Some(conf.request_timeout))
         .build();

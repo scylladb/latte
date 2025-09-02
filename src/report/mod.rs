@@ -506,7 +506,13 @@ impl Display for RunConfigCmp<'_> {
                     .join(", ")
             }),
             self.line("Consistency", "", |conf| {
-                conf.connection.consistency.scylla_consistency().to_string()
+                conf.connection.consistency.consistency().to_string()
+            }),
+            self.line("Serial consistency", "", |conf| {
+                conf.connection
+                    .serial_consistency
+                    .serial_consistency()
+                    .to_string()
             }),
             self.line("Tags", "", |conf| conf.tags.iter().join(", ")),
         ];
