@@ -1,4 +1,4 @@
-FROM rust:1.88-slim-bookworm AS builder
+FROM rust:1.90-slim-trixie AS builder
 
 WORKDIR /usr/src/app
 
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     && cargo build --release
 
-FROM debian:bookworm-slim AS production
+FROM debian:trixie-slim AS production
 
 LABEL org.opencontainers.image.source="https://github.com/scylladb/latte"
 LABEL org.opencontainers.image.title="ScyllaDB latte"

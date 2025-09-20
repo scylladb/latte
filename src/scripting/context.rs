@@ -455,7 +455,7 @@ impl Context {
         } else if row_count < actual_row_count {
             row_count_diff = actual_row_count - row_count;
             let mut smallest_partn_count_diff = row_count_diff / partitions[0].2;
-            if row_count_diff % partitions[0].2 > 0 {
+            if !row_count_diff.is_multiple_of(partitions[0].2) {
                 smallest_partn_count_diff += 1;
             }
             if smallest_partn_count_diff > 0 {
@@ -685,8 +685,7 @@ impl Context {
                 "Either 'cql' or 'key' is allowed, not both".to_string(),
             )));
         }
-        let stmt = if key.is_some() {
-            let key = key.expect("failed to unwrap the 'key' parameter");
+        let stmt = if let Some(key) = key {
             self.statements.get(key).ok_or_else(|| {
                 CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
             })?
