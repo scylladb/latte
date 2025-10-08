@@ -1,0 +1,335 @@
+// This rune script shows how we can do data validation in rune scripts (see 'get_by_ck' rune function).
+// Almost all CQL data types are covered. The exception is "counters" - it is not yet covered in here.
+//
+// USAGE:
+//
+// 1) Create schema:
+// $ latte schema workloads/data_validation.rn 172.17.0.2 -P tablets=false
+//
+// 2) Populate DB making the 50% of partitions contain 4 rows and other 50% contain 6 rows:
+// $ latte run workloads/data_validation.rn -q \
+//     -d 1000 -r 1000 -P row_count=1000 \
+//     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
+//     -f insert -- 172.17.0.2
+//
+// 3) Get a single row validating data in rune script:
+// $ latte run workloads/data_validation.rn -q \
+//     -d 1000 -r 1000 -P row_count=1000 \
+//     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
+//     -f get_by_ck -- 172.17.0.2
+//
+// It is possible to test both data distribution approaches in parallel - tablets and vnodes.
+// To do it need just to specify 'keyspace' latte custom parameter for each command of the second group.
+// Example for vnodes (tablets are enabled by default and may use default keyspace name):
+//    $ latte schema workloads/data_validation.rn 172.17.0.2 -P keyspace=latte_vnodes -P tablets=false
+//    $ latte run workloads/data_validation.rn 172.17.0.2 ... -P keyspace=latte_vnodes ...
+//
+// Note that 'tablets' custom parameter is used only during the schema creation phase which
+// gets triggers using 'latte schema' command.
+// But the 'keyspace' custom parameter is used in both - 'schema' and 'run' latte commands.
+
+use latte::*;
+
+const KEYSPACE = latte::param!("keyspace", "latte");
+const TABLE = latte::param!("table", "data_validation");
+const TABLETS = latte::param!("tablets", true);
+const COMPACTION_STRATEGY = latte::param!("compaction_strategy", "IncrementalCompactionStrategy");
+
+const ROW_COUNT = latte::param!("row_count", 1_000_000);
+const OFFSET = latte::param!("offset", 0);
+const REPLICATION_FACTOR = latte::param!("replication_factor", 3);
+const ROWS_PER_PARTITION = latte::param!("rows_per_partition", 1);
+// NOTE: 'partition_sizes' defines set of 'percent:multiplier' pairs to create multi-row partitions
+// of different sizes. Example: '95:1,4:2,1:4'
+const PARTITION_SIZES = latte::param!("partition_sizes", "100:1");
+
+const P_STMT = #{
+    "INSERT": #{
+        "NAME": "p_stmt_data_validation__insert",
+        "CQL": `INSERT INTO ${KEYSPACE}.${TABLE}(
+            pk, ck,
+            col_bool, col_tinyint, col_smallint, col_int, col_bigint, col_float, col_double,
+            col_ascii, col_text, col_varchar, col_blob, col_inet, col_uuid, col_timeuuid,
+            col_date, col_time, col_timestamp, col_duration, col_decimal, col_varint,
+            col_udt, col_list, col_set, col_map, col_tuple
+        ) VALUES (
+            :pk, :ck,
+            :col_bool, :col_tinyint, :col_smallint, :col_int, :col_bigint, :col_float, :col_double,
+            :col_ascii, :col_text, :col_varchar, :col_blob, :col_inet, :col_uuid, :col_timeuuid,
+            :col_date, :col_time, :col_timestamp, :col_duration, :col_decimal, :col_varint,
+            :col_udt, :col_list, :col_set, :col_map, :col_tuple
+        )`,
+    },
+    "GET": #{
+        "NAME": "p_stmt_data_validation__get",
+        // NOTE: get all columns to make them be processed by latte
+        //       to make sure that transformation to Rune data types works correctly.
+        "CQL": `SELECT * FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk`,
+    },
+    "GET_BY_CK": #{
+        "NAME": "p_stmt_data_validation__get_by_ck",
+        "CQL": `SELECT * FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk AND ck = :ck`,
+    },
+};
+
+pub async fn schema(db) {
+    // db.execute(`DROP KEYSPACE ${KEYSPACE}`).await?;
+    db.execute(`
+        CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
+        WITH replication = {
+          'class'              : 'NetworkTopologyStrategy',
+          'replication_factor' : ${REPLICATION_FACTOR}
+        }
+        AND tablets = {'enabled': ${TABLETS}}
+    `).await?;
+    db.execute(`CREATE TYPE IF NOT EXISTS ${KEYSPACE}.udt (id bigint, text text)`).await?;
+    db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE} (
+        pk bigint,
+        ck bigint,
+
+        col_bool boolean,
+        col_tinyint tinyint,
+        col_smallint smallint,
+        col_int int,
+        col_bigint bigint,
+        col_float float,
+        col_double double,
+        col_ascii ascii,
+        col_text text,
+        col_varchar varchar,
+        col_blob blob,
+        col_inet inet,
+        col_uuid uuid,
+        col_timeuuid timeuuid,
+        col_date date,
+        col_time time,
+        col_timestamp timestamp,
+        col_duration duration,
+        col_decimal decimal,
+        col_varint varint,
+
+        col_udt udt,
+        col_list frozen<list<frozen<udt>>>,
+        col_set frozen<set<bigint>>,
+        col_map map<text, frozen<udt>>,
+        col_tuple tuple<bigint, text>,
+
+        PRIMARY KEY (pk, ck)
+    ) WITH compaction = { 'class' : '${COMPACTION_STRATEGY}' }`).await?;
+}
+
+pub async fn erase(db) {
+    db.execute(`TRUNCATE TABLE ${KEYSPACE}.${TABLE}`).await?
+}
+
+pub async fn prepare(db) {
+    db.init_partition_row_distribution_preset(
+        "main", ROW_COUNT, ROWS_PER_PARTITION, PARTITION_SIZES,
+    ).await?;
+    db.prepare(P_STMT.INSERT.NAME, P_STMT.INSERT.CQL).await?;
+    db.prepare(P_STMT.GET.NAME, P_STMT.GET.CQL).await?;
+    db.prepare(P_STMT.GET_BY_CK.NAME, P_STMT.GET_BY_CK.CQL).await?;
+}
+
+// Utility functions
+
+async fn generate_decimal(idx) {
+    let dec = if idx % 24 == 0 {
+        None // Set 'null/none' to some part of records
+    } else if idx % 2 == 0 {
+        let value = hash_range(idx, 4_503_599_627_370_495 ); // 2^52 limit for mantissa
+        if idx % 4 == 0 {
+            `${value}` // as string
+        } else {
+            value // as integer
+        }
+    } else {
+        // NOTE: all digits in float must not exceed 2^52 (4_503_599_627_370_495)
+        //       So, craft a quasi-float as string to satisfy this limitation.
+        //       Another option is to use 'normal_f32' as it is done below in the code.
+        if idx % 3 == 0 {
+            `0.0000000${hash_range(idx, 9876543)}`
+        } else {
+            `${hash_range(idx, 9876543)}.${hash_range(idx, 9876543)}`
+        }
+    };
+    dec
+}
+
+async fn generate_row_data(db, i) {
+    let idx = i % ROW_COUNT + OFFSET;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+    let ck = hash(idx);
+
+    let div3 = idx % 3;
+    let mult = if idx % 2 == 0 { -1 } else { 1 };
+
+    let col_bool = if div3 == 0 { None } else { div3 == 1 };
+    let col_tinyint = if idx % 17 == 0 { None } else { hash_range(idx, 127) * mult };
+    let col_smallint = if idx % 23 == 0 { None } else { hash_range(idx, 32_767) * mult };
+    let col_int = if idx % 29 == 0 { None } else { hash_range(idx, 2_147_483_647) * mult };
+    let col_bigint = if idx % 37 == 0 { None } else { hash(idx) * mult };
+    // NOTE: float in CQL is 32bit, so, need to use 'normal_f32'
+    let col_float = if idx % 11 == 0 { None } else {
+        normal_f32(idx, 1234.0, if idx % 2 == 0 { 999.9 } else { 555.0 })
+    };
+    // NOTE: double in CQL is 64bit, so we can use 'normal'
+    let col_double = if idx % 12 == 0 { None } else { normal(idx, 0.0, 1234567890.0 ) };
+    let col_ascii = if idx % 13 == 0 { None } else { text(idx, hash_range(idx, 64)) };
+    let col_text = if idx % 14 == 0 { None } else { text(idx + 200, hash_range(idx, 64)) };
+    let col_varchar = if idx % 15 == 0 { None } else { text(idx + 300, hash_range(idx, 64)) };
+    let col_blob = if idx % 16 == 0 { None } else { blob(idx + 400, hash_range(idx, 64)) };
+    let col_inet = if idx % 17 == 0 { None } else {(
+        `${hash_range(idx, 255)}` +
+        `.${hash_range(idx + 60, 255)}` +
+        `.${hash_range(idx + 120, 255)}` +
+        `.${hash_range(idx + 180, 255)}`
+    )};
+    let col_uuid = if idx % 18 == 0 { None } else { uuid(idx) };
+    // NOTE: test-wise everything must be idempotent, so craft time-based values as idempotent
+    let col_timeuuid = if idx % 19 == 0 { None } else {
+        `474ecf7${idx % 7}-4fea-11ef-${idx % 6}eba-${idx % 8}${idx % 9}1023456789`
+    };
+    let col_date = if idx % 20 == 0 { None } else {
+        if idx % 2 == 0 {
+            `20${idx % 5}${idx % 9}-10-2${idx % 7}` // as human-date
+        } else {
+            (hash_range(idx, 4_294_967_295) + 1_000_000_000) % 4_294_967_295 // as 10 digit analog
+        }
+    };
+    let col_time = if idx % 21 == 0 { None } else {
+        if idx % 2 == 0 {
+            `1${idx % 9}:4${idx % 9}:3${idx % 9}` // as human time
+        } else {
+            hash_range(idx+777, 86_399_999_999_999) // as nanoseconds since midnight
+        }
+    };
+    let col_timestamp = if idx % 22 == 0 { None } else { hash(idx+888) };
+    let col_duration = if idx % 23 == 0 { "2y3mo2w6d23h59m" } else {
+        `${idx % 11}mo${idx % 9}d${idx % 23}h${idx % 59}m${idx % 31}s`
+    };
+    let col_decimal = generate_decimal(idx).await;
+    let col_varint = if idx % 24 == 0 { None } else { hash_range(idx, 9_223_372_036_854_775_807) * mult};
+
+    let col_udt = if idx % 25 == 0 { None } else {
+        #{"id": hash(idx), "text": if idx % 13 == 0 { None } else { text(idx, 16) }}
+    };
+    let col_list = if idx % 26 == 0 { None } else { [ // list of UDTs, must NOT be sorted
+        #{"id": hash(idx+100), "text": text(idx+100, 20)},
+        #{"id": hash(idx+200), "text": text(idx+200, 20)},
+    ] };
+    let col_set = if idx % 27 == 0 { None } else { [hash(idx+888), hash(idx+999)] };
+    if !is_none(col_set) {
+        col_set.sort(); // We must sort it because DB will do it
+    }
+    let col_map = if idx % 28 == 0 { None } else { [
+        (text(idx+123, 10), #{"id": hash(idx), "text": text(idx, 16)}),
+        (text(idx+223, 10), #{"id": hash(idx), "text": text(idx, 16)}),
+        (text(idx+323, 10), #{"id": hash(idx), "text": text(idx, 16)}),
+    ] };
+    if !is_none(col_map) {
+        col_map.sort(); // We must sort it because DB will do it
+    }
+    let col_tuple = if idx % 29 == 0 { None } else { if idx % 2 == 0 {
+        (hash(idx+333), if idx % 12 == 0 { None } else { text(idx+444, 20) }) // as Rune Tuple
+    } else {
+        [hash(idx+333), text(idx+444, 20)] // as Rune Vector
+    } };
+    #{ // Object with attrs as a return value
+        "pk": pk, "ck": ck, "partition": partition,
+        "col_bool": col_bool, "col_tinyint": col_tinyint, "col_smallint": col_smallint,
+        "col_int": col_int, "col_bigint": col_bigint, "col_float": col_float, "col_double": col_double,
+        "col_ascii": col_ascii, "col_text": col_text, "col_varchar": col_varchar,
+        "col_blob": col_blob, "col_inet": col_inet, "col_uuid": col_uuid, "col_timeuuid": col_timeuuid,
+        "col_date": col_date, "col_time": col_time, "col_timestamp": col_timestamp,
+        "col_duration": col_duration, "col_decimal": col_decimal, "col_varint": col_varint,
+        "col_udt": col_udt, "col_list": col_list, "col_set": col_set, "col_map": col_map, "col_tuple": col_tuple,
+        "col_names": [ // utility attr to be used by further data verification
+            "col_bool", "col_tinyint", "col_smallint", "col_int", "col_bigint", "col_float",
+            "col_double", "col_ascii", "col_text", "col_varchar", "col_blob", "col_inet",
+            "col_uuid", "col_timeuuid", "col_date", "col_time", "col_timestamp",
+            "col_duration", "col_decimal", "col_varint", "col_udt", "col_list",
+            "col_set", "col_map", "col_tuple",
+        ]
+    }
+}
+
+// User functions
+
+pub async fn insert(db, i) {
+    let d = generate_row_data(db, i).await;
+    db.execute_prepared(P_STMT.INSERT.NAME, [
+        d.pk, d.ck,
+        d.col_bool, d.col_tinyint, d.col_smallint, d.col_int, d.col_bigint, d.col_float, d.col_double,
+        d.col_ascii, d.col_text, d.col_varchar, d.col_blob, d.col_inet, d.col_uuid, d.col_timeuuid,
+        d.col_date, d.col_time, d.col_timestamp, d.col_duration, d.col_decimal, d.col_varint,
+        d.col_udt, d.col_list, d.col_set, d.col_map, d.col_tuple,
+    ]).await?
+}
+
+pub async fn get(db, i) {
+    // NOTE: gets all rows of a partition.
+    let d = generate_row_data(db, i).await;
+    let rows = db.execute_prepared_with_result(P_STMT.GET.NAME, [d.pk]).await?;
+    if rows.len() < 1 {
+        // NOTE: it may be false negative when we populate DB with less rows then 'ROW_COUNT'.
+        db.signal_failure("Expected at least 1 row").await?;
+    }
+    if rows.len() > d.partition.rows_num {
+        // NOTE: more efficient row count validation is shown
+        //       in the 'workloads/row_count_validation.rn' rune script which uses
+        //       the 'execute_prepared_with_validation' context function.
+        db.signal_failure(
+            `Expected '${d.partition.rows_num}' rows in the '${d.partition.idx}' partition idx. ` +
+            `Got '${rows.len()}'`
+        ).await?;
+    }
+}
+
+pub async fn get_by_ck(db, i) {
+    // NOTE: gets always 1 row.
+    let d = generate_row_data(db, i).await;
+    let rows = db.execute_prepared_with_result(P_STMT.GET_BY_CK.NAME, [d.pk, d.ck]).await?;
+    // dbg!(rows);
+    let rows_len = rows.len();
+    if rows_len != 1 {
+        // NOTE: may be false negative only if we didn't populate DB correctly.
+        db.signal_failure(`Expected at exactly 1 row. But got '${rows_len}'`).await?;
+    }
+    // NOTE: 'assert' macros, in case of failure, stop stress execution right away.
+    // If it is needed to either ignore or retry the validation error
+    // then need to use 'db.signal_failure(...)' context function.
+    assert!(d.col_names.len() > 0);
+    for col_name in d.col_names {
+        let actual = rows.0.get(col_name)?;
+        let expected = d.get(col_name)?;
+        if !is_none(expected) {
+            if col_name == "col_uuid" || col_name == "col_decimal" {
+                // NOTE: Uuid: we store as Uuid object, but get string, align it.
+                // NOTE: Decimal: we store it as different types, align it.
+                expected = `${expected}`;
+            } else if col_name == "col_duration" {
+                // TODO: implement proper comparison for the Duration CQL data type.
+                // we get data like
+                //     {"days": 1, "months": 1, "nanoseconds": 3661000000000}
+                // but set it as string-duration like following:
+                //     "1mo1d1h1m1s".
+                continue
+            } else if col_name == "col_date" {
+                // TODO: implement proper comparison for the Date CQL data type.
+                continue
+            } else if col_name == "col_time" {
+                // TODO: implement proper comparison for the Time CQL data type.
+                continue
+            }
+            if actual != expected {
+                db.signal_failure(
+                    `Column '${col_name}'. Actual value is '${actual}', but expected is '${expected}'`
+                ).await?;
+            }
+        } else {
+            assert!(is_none(actual));
+        }
+    }
+}
