@@ -67,6 +67,7 @@ fn try_install(
     latte_module.function_meta(functions::hash_select)?;
     latte_module.function_meta(functions::uuid)?;
     latte_module.function_meta(functions::normal)?;
+    latte_module.function_meta(functions::normal_f32)?;
     latte_module.function_meta(functions::uniform)?;
     latte_module.function_meta(functions::is_none)?;
 

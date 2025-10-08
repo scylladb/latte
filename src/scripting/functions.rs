@@ -88,13 +88,23 @@ pub fn hash_range(i: i64, max: i64) -> i64 {
     hash_inner(i) % max
 }
 
-/// Generates a floating point value with normal distribution
+/// Generates a 64-bits floating point value with normal distribution
 #[rune::function]
 pub fn normal(i: i64, mean: f64, std_dev: f64) -> VmResult<f64> {
     let mut rng = SmallRng::seed_from_u64(i as u64);
     let distribution =
         vm_try!(Normal::new(mean, std_dev).map_err(|e| VmError::panic(format!("{e}"))));
     VmResult::Ok(distribution.sample(&mut rng))
+}
+
+/// Generates a 32-bits floating point value with normal distribution
+#[rune::function]
+pub fn normal_f32(i: i64, mean: f32, std_dev: f32) -> VmResult<f32> {
+    let mut rng = SmallRng::seed_from_u64(i as u64);
+    let distribution = vm_try!(
+        Normal::new(mean.into(), std_dev.into()).map_err(|e| VmError::panic(format!("{e}")))
+    );
+    VmResult::Ok(distribution.sample(&mut rng) as f32)
 }
 
 #[rune::function]
