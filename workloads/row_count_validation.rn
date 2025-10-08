@@ -6,10 +6,10 @@
 //
 // USAGE:
 // 1) Create schema:
-// $ latte schema workloads/validation.rn 172.17.0.2
+// $ latte schema workloads/row_count_validation.rn 172.17.0.2
 //
 // 2) Populate DB:
-// $ latte run workloads/validation.rn -q \
+// $ latte run workloads/row_count_validation.rn -q \
 //     -d 1000 -r 1000 -P row_count=1000 \
 //     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
 //     -f insert -- 172.17.0.2
@@ -17,19 +17,19 @@
 // 3) Do select queries with validation
 //
 // 3a) Get one row
-// $ latte run workloads/validation.rn -q \
+// $ latte run workloads/row_count_validation.rn -q \
 //     -d 1000 -r 1000 -P row_count=1000 \
 //     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
 //     -f get -- 172.17.0.2
 //
 // 3b) Get many rows
-// $ latte run workloads/validation.rn -q \
+// $ latte run workloads/row_count_validation.rn -q \
 //     -d 1000 -r 1000 -P row_count=1000 \
 //     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
 //     -f get_many -- 172.17.0.2
 //
 // 3c) Count
-// $ latte run workloads/validation.rn -q \
+// $ latte run workloads/row_count_validation.rn -q \
 //     -d 1000 -r 1000 -P row_count=1000 \
 //     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
 //     -f count -- 172.17.0.2
