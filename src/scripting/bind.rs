@@ -33,18 +33,22 @@ static DURATION_REGEX: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
-fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassError>> {
+fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<CassError>> {
     match (v, typ) {
-        (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => Ok(CqlValue::Boolean(*v)),
+        (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => {
+            Ok(Some(CqlValue::Boolean(*v)))
+        }
 
         (Value::Byte(v), ColumnType::Native(NativeType::TinyInt)) => {
-            Ok(CqlValue::TinyInt(*v as i8))
+            Ok(Some(CqlValue::TinyInt(*v as i8)))
         }
         (Value::Byte(v), ColumnType::Native(NativeType::SmallInt)) => {
-            Ok(CqlValue::SmallInt(*v as i16))
+            Ok(Some(CqlValue::SmallInt(*v as i16)))
         }
-        (Value::Byte(v), ColumnType::Native(NativeType::Int)) => Ok(CqlValue::Int(*v as i32)),
-        (Value::Byte(v), ColumnType::Native(NativeType::BigInt)) => Ok(CqlValue::BigInt(*v as i64)),
+        (Value::Byte(v), ColumnType::Native(NativeType::Int)) => Ok(Some(CqlValue::Int(*v as i32))),
+        (Value::Byte(v), ColumnType::Native(NativeType::BigInt)) => {
+            Ok(Some(CqlValue::BigInt(*v as i64)))
+        }
 
         (Value::Integer(v), ColumnType::Native(NativeType::TinyInt)) => {
             convert_int(*v, NativeType::TinyInt, CqlValue::TinyInt)
@@ -55,15 +59,17 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
         (Value::Integer(v), ColumnType::Native(NativeType::Int)) => {
             convert_int(*v, NativeType::Int, CqlValue::Int)
         }
-        (Value::Integer(v), ColumnType::Native(NativeType::BigInt)) => Ok(CqlValue::BigInt(*v)),
+        (Value::Integer(v), ColumnType::Native(NativeType::BigInt)) => {
+            Ok(Some(CqlValue::BigInt(*v)))
+        }
         (Value::Integer(v), ColumnType::Native(NativeType::Counter)) => {
-            Ok(CqlValue::Counter(scylla::value::Counter(*v)))
+            Ok(Some(CqlValue::Counter(scylla::value::Counter(*v))))
         }
         (Value::Integer(v), ColumnType::Native(NativeType::Timestamp)) => {
-            Ok(CqlValue::Timestamp(scylla::value::CqlTimestamp(*v)))
+            Ok(Some(CqlValue::Timestamp(scylla::value::CqlTimestamp(*v))))
         }
         (Value::Integer(v), ColumnType::Native(NativeType::Date)) => match (*v).try_into() {
-            Ok(date) => Ok(CqlValue::Date(CqlDate(date))),
+            Ok(date) => Ok(Some(CqlValue::Date(CqlDate(date)))),
             Err(_) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                 format!("{v:?}"),
                 "NativeType::Date".to_string(),
@@ -71,28 +77,32 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
             )))),
         },
         (Value::Integer(v), ColumnType::Native(NativeType::Time)) => {
-            Ok(CqlValue::Time(CqlTime(*v)))
+            Ok(Some(CqlValue::Time(CqlTime(*v))))
         }
-        (Value::Integer(v), ColumnType::Native(NativeType::Varint)) => Ok(CqlValue::Varint(
+        (Value::Integer(v), ColumnType::Native(NativeType::Varint)) => Ok(Some(CqlValue::Varint(
             CqlVarint::from_signed_bytes_be((*v).to_be_bytes().to_vec()),
-        )),
-        (Value::Integer(v), ColumnType::Native(NativeType::Decimal)) => Ok(CqlValue::Decimal(
-            scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
-                (*v).to_be_bytes().to_vec(),
-                0,
-            ),
-        )),
+        ))),
+        (Value::Integer(v), ColumnType::Native(NativeType::Decimal)) => {
+            Ok(Some(CqlValue::Decimal(
+                scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                    (*v).to_be_bytes().to_vec(),
+                    0,
+                ),
+            )))
+        }
 
-        (Value::Float(v), ColumnType::Native(NativeType::Float)) => Ok(CqlValue::Float(*v as f32)),
-        (Value::Float(v), ColumnType::Native(NativeType::Double)) => Ok(CqlValue::Double(*v)),
+        (Value::Float(v), ColumnType::Native(NativeType::Float)) => {
+            Ok(Some(CqlValue::Float(*v as f32)))
+        }
+        (Value::Float(v), ColumnType::Native(NativeType::Double)) => Ok(Some(CqlValue::Double(*v))),
         (Value::Float(v), ColumnType::Native(NativeType::Decimal)) => {
             let decimal = rust_decimal::Decimal::from_f64_retain(*v).unwrap();
-            Ok(CqlValue::Decimal(
+            Ok(Some(CqlValue::Decimal(
                 scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
                     decimal.mantissa().to_be_bytes().to_vec(),
                     decimal.scale().try_into().unwrap(),
                 ),
-            ))
+            )))
         }
 
         (Value::String(s), ColumnType::Native(NativeType::Date)) => {
@@ -105,7 +115,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 ))
             })?;
             let cql_date = CqlDate::from(naive_date);
-            Ok(CqlValue::Date(cql_date))
+            Ok(Some(CqlValue::Date(cql_date)))
         }
         (Value::String(s), ColumnType::Native(NativeType::Time)) => {
             let time_str = s.borrow_ref().unwrap();
@@ -121,7 +131,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 )))
             })?;
             let cql_time = CqlTime::try_from(naive_time)?;
-            Ok(CqlValue::Time(cql_time))
+            Ok(Some(CqlValue::Time(cql_time)))
         }
         (Value::String(s), ColumnType::Native(NativeType::Duration)) => {
             // TODO: add support for the following 'ISO 8601' format variants:
@@ -218,7 +228,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 days,
                 nanoseconds,
             };
-            Ok(CqlValue::Duration(cql_duration))
+            Ok(Some(CqlValue::Duration(cql_duration)))
         }
 
         (Value::String(s), ColumnType::Native(NativeType::Varint)) => {
@@ -234,15 +244,15 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 .chars()
                 .map(|c| c.to_digit(10).expect("Invalid digit") as u8)
                 .collect();
-            Ok(CqlValue::Varint(
+            Ok(Some(CqlValue::Varint(
                 scylla::value::CqlVarint::from_signed_bytes_be(byte_vector),
-            ))
+            )))
         }
         (Value::String(s), ColumnType::Native(NativeType::Timeuuid)) => {
             let timeuuid_str = s.borrow_ref().unwrap();
             let timeuuid = CqlTimeuuid::from_str(timeuuid_str.as_str());
             match timeuuid {
-                Ok(timeuuid) => Ok(CqlValue::Timeuuid(timeuuid)),
+                Ok(timeuuid) => Ok(Some(CqlValue::Timeuuid(timeuuid))),
                 Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                     format!("{v:?}"),
                     "NativeType::Timeuuid".to_string(),
@@ -253,12 +263,14 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
         (
             Value::String(v),
             ColumnType::Native(NativeType::Text) | ColumnType::Native(NativeType::Ascii),
-        ) => Ok(CqlValue::Text(v.borrow_ref().unwrap().as_str().to_string())),
+        ) => Ok(Some(CqlValue::Text(
+            v.borrow_ref().unwrap().as_str().to_string(),
+        ))),
         (Value::String(s), ColumnType::Native(NativeType::Inet)) => {
             let ipaddr_str = s.borrow_ref().unwrap();
             let ipaddr = IpAddr::from_str(ipaddr_str.as_str());
             match ipaddr {
-                Ok(ipaddr) => Ok(CqlValue::Inet(ipaddr)),
+                Ok(ipaddr) => Ok(Some(CqlValue::Inet(ipaddr))),
                 Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                     format!("{v:?}"),
                     "NativeType::Inet".to_string(),
@@ -269,15 +281,15 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
         (Value::String(s), ColumnType::Native(NativeType::Decimal)) => {
             let dec_str = s.borrow_ref().unwrap();
             let decimal = rust_decimal::Decimal::from_str_exact(&dec_str).unwrap();
-            Ok(CqlValue::Decimal(
+            Ok(Some(CqlValue::Decimal(
                 scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
                     decimal.mantissa().to_be_bytes().to_vec(),
                     decimal.scale().try_into().unwrap(),
                 ),
-            ))
+            )))
         }
         (Value::Bytes(v), ColumnType::Native(NativeType::Blob)) => {
-            Ok(CqlValue::Blob(v.borrow_ref().unwrap().to_vec()))
+            Ok(Some(CqlValue::Blob(v.borrow_ref().unwrap().to_vec())))
         }
         (Value::Vec(v), ColumnType::Native(NativeType::Blob)) => {
             let v: Vec<Value> = v.borrow_ref().unwrap().to_vec();
@@ -285,29 +297,29 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 .into_iter()
                 .map(|value| value.as_byte().unwrap())
                 .collect();
-            Ok(CqlValue::Blob(byte_vec))
+            Ok(Some(CqlValue::Blob(byte_vec)))
         }
         (Value::Option(v), typ) => match v.borrow_ref().unwrap().as_ref() {
             Some(v) => to_scylla_value(v, typ),
-            None => Ok(CqlValue::Empty),
+            None => Ok(None),
         },
         (Value::Tuple(v), ColumnType::Tuple(tuple)) => {
             let v = v.borrow_ref().unwrap();
             let mut elements = Vec::with_capacity(v.len());
             for (i, current_element) in v.iter().enumerate() {
                 let element = to_scylla_value(current_element, &tuple[i])?;
-                elements.push(Some(element));
+                elements.push(element);
             }
-            Ok(CqlValue::Tuple(elements))
+            Ok(Some(CqlValue::Tuple(elements)))
         }
         (Value::Vec(v), ColumnType::Tuple(tuple)) => {
             let v = v.borrow_ref().unwrap();
             let mut elements = Vec::with_capacity(v.len());
             for (i, current_element) in v.iter().enumerate() {
                 let element = to_scylla_value(current_element, &tuple[i])?;
-                elements.push(Some(element));
+                elements.push(element);
             }
-            Ok(CqlValue::Tuple(elements))
+            Ok(Some(CqlValue::Tuple(elements)))
         }
         (
             Value::Vec(v),
@@ -320,9 +332,19 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
             let elements = v
                 .as_ref()
                 .iter()
-                .map(|v| to_scylla_value(v, elt))
+                .map(|v| {
+                    to_scylla_value(v, elt).and_then(|opt| {
+                        opt.ok_or_else(|| {
+                            Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                format!("{v:?}"),
+                                "CollectionType::List".to_string(),
+                                None,
+                            )))
+                        })
+                    })
+                })
                 .try_collect()?;
-            Ok(CqlValue::List(elements))
+            Ok(Some(CqlValue::List(elements)))
         }
         (
             Value::Vec(v),
@@ -335,9 +357,19 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
             let elements = v
                 .as_ref()
                 .iter()
-                .map(|v| to_scylla_value(v, elt))
+                .map(|v| {
+                    to_scylla_value(v, elt).and_then(|opt| {
+                        opt.ok_or_else(|| {
+                            Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                format!("{v:?}"),
+                                "CollectionType::Set".to_string(),
+                                None,
+                            )))
+                        })
+                    })
+                })
                 .try_collect()?;
-            Ok(CqlValue::Set(elements))
+            Ok(Some(CqlValue::Set(elements)))
         }
         (
             Value::Vec(v),
@@ -352,8 +384,8 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 match tuple {
                     Value::Tuple(tuple) if tuple.borrow_ref().unwrap().len() == 2 => {
                         let tuple = tuple.borrow_ref().unwrap();
-                        let key = to_scylla_value(tuple.first().unwrap(), key_elt)?;
-                        let value = to_scylla_value(tuple.get(1).unwrap(), value_elt)?;
+                        let key = to_scylla_value(tuple.first().unwrap(), key_elt)?.unwrap();
+                        let value = to_scylla_value(tuple.get(1).unwrap(), value_elt)?.unwrap();
                         map_vec.push((key, value));
                     }
                     _ => {
@@ -365,7 +397,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                     }
                 }
             }
-            Ok(CqlValue::Map(map_vec))
+            Ok(Some(CqlValue::Map(map_vec)))
         }
         (
             Value::Object(obj),
@@ -378,11 +410,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
             let mut map_vec = Vec::with_capacity(obj.keys().len());
             for (k, v) in obj.iter() {
                 let key = String::from(k.as_str());
-                let key = to_scylla_value(&(key.to_value().unwrap()), key_elt)?;
-                let value = to_scylla_value(v, value_elt)?;
+                let key = to_scylla_value(&(key.to_value().unwrap()), key_elt)?.unwrap();
+                let value = to_scylla_value(v, value_elt)?.unwrap();
                 map_vec.push((key, value));
             }
-            Ok(CqlValue::Map(map_vec))
+            Ok(Some(CqlValue::Map(map_vec)))
         }
         (
             Value::Object(v),
@@ -398,11 +430,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 .map(|(name, typ)| (name.to_string(), typ.clone()))
                 .collect();
             let fields = read_fields(|s| obj.get(s), &field_types)?;
-            Ok(CqlValue::UserDefinedType {
+            Ok(Some(CqlValue::UserDefinedType {
                 name: definition.name.to_string(),
                 keyspace: definition.keyspace.to_string(),
                 fields,
-            })
+            }))
         }
         (
             Value::Struct(v),
@@ -418,11 +450,11 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
                 .map(|(name, typ)| (name.to_string(), typ.clone()))
                 .collect();
             let fields = read_fields(|s| obj.get(s), &field_types)?;
-            Ok(CqlValue::UserDefinedType {
+            Ok(Some(CqlValue::UserDefinedType {
                 name: definition.name.to_string(),
                 keyspace: definition.keyspace.to_string(),
                 fields,
-            })
+            }))
         }
 
         (Value::Any(obj), ColumnType::Native(NativeType::Uuid)) => {
@@ -430,7 +462,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<CqlValue, Box<CassErro
             let h = obj.type_hash();
             if h == Uuid::type_hash() {
                 let uuid: &Uuid = obj.downcast_borrow_ref().unwrap();
-                Ok(CqlValue::Uuid(uuid.0))
+                Ok(Some(CqlValue::Uuid(uuid.0)))
             } else {
                 Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                     format!("{v:?}"),
@@ -451,14 +483,14 @@ fn convert_int<T: TryFrom<i64>, R>(
     value: i64,
     typ: NativeType,
     f: impl Fn(T) -> R,
-) -> Result<R, Box<CassError>> {
+) -> Result<Option<R>, Box<CassError>> {
     let converted = value.try_into().map_err(|_| {
         Box::new(CassError(CassErrorKind::ValueOutOfRange(
             value.to_string(),
             format!("{typ:?}").to_string(),
         )))
     })?;
-    Ok(f(converted))
+    Ok(Some(f(converted)))
 }
 
 /// Binds parameters passed as a single rune value to the arguments of the statement.
@@ -466,7 +498,7 @@ fn convert_int<T: TryFrom<i64>, R>(
 pub fn to_scylla_query_params(
     params: &Value,
     types: ColumnSpecs,
-) -> Result<Vec<CqlValue>, Box<CassError>> {
+) -> Result<Vec<Option<CqlValue>>, Box<CassError>> {
     Ok(match params {
         Value::Tuple(tuple) => {
             let mut values = Vec::new();
@@ -509,12 +541,12 @@ pub fn to_scylla_query_params(
 fn read_params<'a, 'b>(
     get_value: impl Fn(&str) -> Option<&'a Value>,
     params: &[ColumnSpec],
-) -> Result<Vec<CqlValue>, Box<CassError>> {
+) -> Result<Vec<Option<CqlValue>>, Box<CassError>> {
     let mut values = Vec::with_capacity(params.len());
     for column in params {
         let value = match get_value(column.name()) {
             Some(value) => to_scylla_value(value, column.typ())?,
-            None => CqlValue::Empty,
+            None => Some(CqlValue::Empty),
         };
         values.push(value)
     }
@@ -528,7 +560,7 @@ fn read_fields<'a, 'b>(
     let mut values = Vec::with_capacity(fields.len());
     for (field_name, field_type) in fields {
         if let Some(value) = get_value(field_name) {
-            let value = Some(to_scylla_value(value, field_type)?);
+            let value = to_scylla_value(value, field_type)?;
             values.push((field_name.to_string(), value))
         };
     }
@@ -574,7 +606,7 @@ mod tests {
             &duration_rune_str,
             &ColumnType::Native(NativeType::Duration),
         );
-        assert_eq!(actual.unwrap().to_string(), expected);
+        assert_eq!(actual.unwrap().unwrap().to_string(), expected);
     }
 
     #[rstest]
