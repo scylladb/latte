@@ -347,27 +347,33 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Varint(varint) => Ok(Value::String(
-            Shared::new(
-                RuneString::try_from(
-                    String::from_utf8(varint.clone().into_signed_bytes_be())
-                        .expect("Invalid UTF-8"),
-                )
-                .expect("Failed to create RuneString"),
-            )
-            .map_err(|_| {
-                Box::new(CassError(CassErrorKind::Error(
-                    "Failed to create shared string for Varint".to_string(),
-                )))
-            })?,
-        )),
+        CqlValue::Varint(varint) => Ok(Value::Integer({
+            let varint_bytes = varint.as_signed_bytes_be_slice();
+            if varint_bytes.len() > 8 {
+                return Err(Box::new(CassError(CassErrorKind::Error(
+                    "Varint is too large to fit into an i64".to_string(),
+                ))));
+            };
+            let mut padded = [0u8; 8];
+            if varint_bytes[0] & 0x80 != 0 {
+                padded[..8 - varint_bytes.len()].fill(0xFF);
+            }
+            padded[8 - varint_bytes.len()..].copy_from_slice(varint_bytes);
+            i64::from_be_bytes(padded)
+        })),
         CqlValue::Decimal(decimal) => {
             let (mantissa_be, scale) = &decimal.clone().into_signed_be_bytes_and_exponent();
-            let dec = rust_decimal::Decimal::try_new(
-                i64::from_be_bytes(mantissa_be.as_slice().try_into().unwrap()),
-                u32::try_from(*scale)?,
-            )
-            .unwrap();
+            let mantissa = if mantissa_be.len() == 8 {
+                i64::from_be_bytes(mantissa_be.as_slice().try_into().unwrap())
+            } else if mantissa_be.len() < 8 {
+                let mut mantissa_array = [0u8; 8];
+                mantissa_array[8 - mantissa_be.len()..].copy_from_slice(mantissa_be);
+                i64::from_be_bytes(mantissa_array)
+            } else {
+                let truncated = &mantissa_be[mantissa_be.len() - 8..];
+                i64::from_be_bytes(truncated.try_into().unwrap())
+            };
+            let dec = rust_decimal::Decimal::try_new(mantissa, u32::try_from(*scale)?).unwrap();
             Ok(Value::String(
                 Shared::new(
                     RuneString::try_from(dec.to_string()).expect("Failed to create RuneString"),
