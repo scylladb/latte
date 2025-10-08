@@ -195,23 +195,23 @@ impl RowDistributionPreset {
 }
 
 /// Converts a Scylla CqlValue to a Rune Value
-fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
+fn cql_value_to_rune_value(value: Option<&CqlValue>) -> Result<Value, Box<CassError>> {
     match value {
-        CqlValue::Ascii(s) | CqlValue::Text(s) => Ok(Value::String(Shared::new(
+        Some(CqlValue::Ascii(s)) | Some(CqlValue::Text(s)) => Ok(Value::String(Shared::new(
             RuneString::try_from(s.clone()).expect("Failed to create RuneString"),
         )?)),
-        CqlValue::Boolean(b) => Ok(Value::Bool(*b)),
-        CqlValue::TinyInt(i) => Ok(Value::Integer(*i as i64)),
-        CqlValue::SmallInt(i) => Ok(Value::Integer(*i as i64)),
-        CqlValue::Int(i) => Ok(Value::Integer(*i as i64)),
-        CqlValue::BigInt(i) => Ok(Value::Integer(*i)),
-        CqlValue::Float(f) => Ok(Value::Float(*f as f64)),
-        CqlValue::Double(f) => Ok(Value::Float(*f)),
-        CqlValue::Counter(c) => Ok(Value::Integer(c.0)),
-        CqlValue::Timestamp(ts) => Ok(Value::Integer(ts.0)),
-        CqlValue::Date(date) => Ok(Value::Integer(date.0 as i64)),
-        CqlValue::Time(time) => Ok(Value::Integer(time.0)),
-        CqlValue::Blob(blob) => {
+        Some(CqlValue::Boolean(b)) => Ok(Value::Bool(*b)),
+        Some(CqlValue::TinyInt(i)) => Ok(Value::Integer(*i as i64)),
+        Some(CqlValue::SmallInt(i)) => Ok(Value::Integer(*i as i64)),
+        Some(CqlValue::Int(i)) => Ok(Value::Integer(*i as i64)),
+        Some(CqlValue::BigInt(i)) => Ok(Value::Integer(*i)),
+        Some(CqlValue::Float(f)) => Ok(Value::Float(*f as f64)),
+        Some(CqlValue::Double(f)) => Ok(Value::Float(*f)),
+        Some(CqlValue::Counter(c)) => Ok(Value::Integer(c.0)),
+        Some(CqlValue::Timestamp(ts)) => Ok(Value::Integer(ts.0)),
+        Some(CqlValue::Date(date)) => Ok(Value::Integer(date.0 as i64)),
+        Some(CqlValue::Time(time)) => Ok(Value::Integer(time.0)),
+        Some(CqlValue::Blob(blob)) => {
             let mut rune_vec = RuneVec::new();
             for byte in blob {
                 rune_vec.push(Value::Byte(*byte)).map_err(|_| {
@@ -226,7 +226,7 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Uuid(uuid) => Ok(Value::String(
+        Some(CqlValue::Uuid(uuid)) => Ok(Value::String(
             Shared::new(
                 RuneString::try_from(uuid.to_string())
                     .expect("Failed to create RuneString for UUID"),
@@ -237,7 +237,7 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?,
         )),
-        CqlValue::Timeuuid(timeuuid) => Ok(Value::String(
+        Some(CqlValue::Timeuuid(timeuuid)) => Ok(Value::String(
             Shared::new(
                 RuneString::try_from(timeuuid.to_string())
                     .expect("Failed to create RuneString for TimeUuid"),
@@ -248,7 +248,7 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?,
         )),
-        CqlValue::Inet(addr) => Ok(Value::String(
+        Some(CqlValue::Inet(addr)) => Ok(Value::String(
             Shared::new(
                 RuneString::try_from(addr.to_string())
                     .expect("Failed to create RuneString for IpAddr"),
@@ -259,14 +259,16 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?,
         )),
-        CqlValue::List(list) => {
+        Some(CqlValue::List(list)) => {
             let mut rune_vec = RuneVec::new();
             for item in list {
-                rune_vec.push(cql_value_to_rune_value(item)?).map_err(|_| {
-                    Box::new(CassError(CassErrorKind::Error(
-                        "Failed to push to Rune vector".to_string(),
-                    )))
-                })?;
+                rune_vec
+                    .push(cql_value_to_rune_value(Some(item))?)
+                    .map_err(|_| {
+                        Box::new(CassError(CassErrorKind::Error(
+                            "Failed to push to Rune vector".to_string(),
+                        )))
+                    })?;
             }
             Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
                 Box::new(CassError(CassErrorKind::Error(
@@ -274,14 +276,16 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Set(set) => {
+        Some(CqlValue::Set(set)) => {
             let mut rune_vec = RuneVec::new();
             for item in set {
-                rune_vec.push(cql_value_to_rune_value(item)?).map_err(|_| {
-                    Box::new(CassError(CassErrorKind::Error(
-                        "Failed to push to Rune vector".to_string(),
-                    )))
-                })?;
+                rune_vec
+                    .push(cql_value_to_rune_value(Some(item))?)
+                    .map_err(|_| {
+                        Box::new(CassError(CassErrorKind::Error(
+                            "Failed to push to Rune vector".to_string(),
+                        )))
+                    })?;
             }
             Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
                 Box::new(CassError(CassErrorKind::Error(
@@ -289,12 +293,12 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Map(map) => {
+        Some(CqlValue::Map(map)) => {
             let mut rune_vec = RuneVec::new();
             for (key, value) in map {
                 let mut pair = RuneAllocVec::new();
-                pair.try_push(cql_value_to_rune_value(key)?)?;
-                pair.try_push(cql_value_to_rune_value(value)?)?;
+                pair.try_push(cql_value_to_rune_value(Some(key))?)?;
+                pair.try_push(cql_value_to_rune_value(Some(value))?)?;
                 rune_vec
                     .push(Value::Tuple(Shared::new(OwnedTuple::try_from(pair)?)?))
                     .map_err(|_| {
@@ -309,14 +313,14 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::UserDefinedType { fields, .. } => {
+        Some(CqlValue::UserDefinedType { fields, .. }) => {
             let mut rune_obj = Object::new();
             for (field_name, field_value) in fields {
                 rune_obj
                     .insert(
                         RuneString::try_from(field_name.clone())
                             .expect("Failed to create RuneString"),
-                        cql_value_to_rune_value(field_value.as_ref().unwrap())?,
+                        cql_value_to_rune_value(field_value.as_ref())?,
                     )
                     .map_err(|_| {
                         Box::new(CassError(CassErrorKind::Error(
@@ -330,11 +334,11 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Tuple(tuple) => {
+        Some(CqlValue::Tuple(tuple)) => {
             let mut rune_vec = RuneVec::new();
             for item in tuple {
                 rune_vec
-                    .push(cql_value_to_rune_value(item.as_ref().unwrap())?)
+                    .push(cql_value_to_rune_value(item.as_ref())?)
                     .map_err(|_| {
                         Box::new(CassError(CassErrorKind::Error(
                             "Failed to push tuple item to Rune vector".to_string(),
@@ -347,7 +351,7 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Varint(varint) => Ok(Value::Integer({
+        Some(CqlValue::Varint(varint)) => Ok(Value::Integer({
             let varint_bytes = varint.as_signed_bytes_be_slice();
             if varint_bytes.len() > 8 {
                 return Err(Box::new(CassError(CassErrorKind::Error(
@@ -361,7 +365,7 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
             padded[8 - varint_bytes.len()..].copy_from_slice(varint_bytes);
             i64::from_be_bytes(padded)
         })),
-        CqlValue::Decimal(decimal) => {
+        Some(CqlValue::Decimal(decimal)) => {
             let (mantissa_be, scale) = &decimal.clone().into_signed_be_bytes_and_exponent();
             let mantissa = if mantissa_be.len() == 8 {
                 i64::from_be_bytes(mantissa_be.as_slice().try_into().unwrap())
@@ -385,7 +389,7 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 })?,
             ))
         }
-        CqlValue::Duration(duration) => {
+        Some(CqlValue::Duration(duration)) => {
             // TODO: update the logic for duration to provide also a duration-like string such as "1h2m3s"
             let mut rune_obj = Object::new();
             rune_obj
@@ -424,8 +428,9 @@ fn cql_value_to_rune_value(value: &CqlValue) -> Result<Value, Box<CassError>> {
                 )))
             })?))
         }
-        CqlValue::Empty => Ok(Value::Option(Shared::new(None)?)),
-        &_ => todo!(), // unexpected, should never be reached
+        Some(CqlValue::Empty) => Ok(Value::Option(Shared::new(None)?)),
+        None => Ok(Value::Option(Shared::new(None)?)),
+        Some(&_) => todo!(), // unexpected, should never be reached
     }
 }
 
@@ -1050,7 +1055,7 @@ impl Context {
                                     .insert(
                                         RuneString::try_from(col_name)
                                             .expect("Failed to create RuneString for column name"),
-                                        cql_value_to_rune_value(&col_value)?,
+                                        cql_value_to_rune_value(Some(&col_value))?,
                                     )
                                     .map_err(|_| {
                                         CassError(CassErrorKind::Error(
@@ -1144,7 +1149,7 @@ impl Context {
             return Err(CassError(CassErrorKind::Error("Empty batch".to_string())));
         }
         let mut batch: Batch = Batch::new(BatchType::Logged);
-        let mut batch_values: Vec<Vec<CqlValue>> = vec![];
+        let mut batch_values: Vec<Vec<Option<CqlValue>>> = vec![];
         for (i, key) in enumerate(keys) {
             let statement = self.statements.get(key).ok_or_else(|| {
                 CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))

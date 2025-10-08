@@ -18,10 +18,17 @@ impl CassError {
         CassError(CassErrorKind::Prepare(cql.to_string(), err))
     }
 
-    pub fn query_execution_error(cql: &str, params: &[CqlValue], err: ExecutionError) -> CassError {
+    pub fn query_execution_error(
+        cql: &str,
+        params: &[Option<CqlValue>],
+        err: ExecutionError,
+    ) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
-            params: params.iter().map(cql_value_obj_to_string).collect(),
+            params: params
+                .iter()
+                .map(|v| cql_value_obj_to_string(v.as_ref()))
+                .collect(),
         };
         let kind = match err {
             ExecutionError::RequestTimeout(_) => CassErrorKind::Overloaded(query, err),
@@ -32,7 +39,7 @@ impl CassError {
 
     pub fn query_validation_error(
         cql: &str,
-        params: &[CqlValue],
+        params: &[Option<CqlValue>],
         expected_rows_num_min: u64,
         expected_rows_num_max: u64,
         actual_rows_num: u64,
@@ -40,7 +47,10 @@ impl CassError {
     ) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
-            params: params.iter().map(cql_value_obj_to_string).collect(),
+            params: params
+                .iter()
+                .map(|v| cql_value_obj_to_string(v.as_ref()))
+                .collect(),
         };
         CassError(CassErrorKind::QueryResponseValidationError(
             query,
@@ -53,11 +63,14 @@ impl CassError {
 
     pub fn query_response_validation_not_applicable_error(
         cql: &str,
-        params: &[CqlValue],
+        params: &[Option<CqlValue>],
     ) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
-            params: params.iter().map(cql_value_obj_to_string).collect(),
+            params: params
+                .iter()
+                .map(|v| cql_value_obj_to_string(v.as_ref()))
+                .collect(),
         };
         CassError(CassErrorKind::QueryResponseValidationNotApplicableError(
             query,
@@ -271,29 +284,29 @@ impl From<std::num::TryFromIntError> for Box<CassError> {
 impl std::error::Error for CassError {}
 
 /// Transforms a CqlValue object to a string dedicated to be part of CassError message
-pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
+pub fn cql_value_obj_to_string(v: Option<&CqlValue>) -> String {
     let no_transformation_size_limit = 32;
     match v {
         // Replace big string- and bytes-alike object values with its size labels
-        CqlValue::Text(param) if param.len() > no_transformation_size_limit => {
+        Some(CqlValue::Text(param)) if param.len() > no_transformation_size_limit => {
             format!("Text(<size>={})", param.len())
         }
-        CqlValue::Ascii(param) if param.len() > no_transformation_size_limit => {
+        Some(CqlValue::Ascii(param)) if param.len() > no_transformation_size_limit => {
             format!("Ascii(<size>={})", param.len())
         }
-        CqlValue::Blob(param) if param.len() > no_transformation_size_limit => {
+        Some(CqlValue::Blob(param)) if param.len() > no_transformation_size_limit => {
             format!("Blob(<size>={})", param.len())
         }
-        CqlValue::UserDefinedType {
+        Some(CqlValue::UserDefinedType {
             name,
             keyspace,
             fields,
-        } => {
+        }) => {
             let mut result =
                 format!("UDT {{ keyspace: \"{keyspace}\", type_name: \"{name}\", fields: [");
             for (field_name, field_value) in fields {
                 let field_string = match field_value {
-                    Some(field) => cql_value_obj_to_string(field),
+                    Some(field) => cql_value_obj_to_string(Some(field)),
                     None => String::from("None"),
                 };
                 result.push_str(&format!("(\"{field_name}\", {field_string}), "));
@@ -304,10 +317,10 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             result.push_str("] }");
             result
         }
-        CqlValue::List(elements) => {
+        Some(CqlValue::List(elements)) => {
             let mut result = String::from("List([");
             for element in elements {
-                let element_string = cql_value_obj_to_string(element);
+                let element_string = cql_value_obj_to_string(Some(element));
                 result.push_str(&element_string);
                 result.push_str(", ");
             }
@@ -317,10 +330,10 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             result.push_str("])");
             result
         }
-        CqlValue::Set(elements) => {
+        Some(CqlValue::Set(elements)) => {
             let mut result = String::from("Set([");
             for element in elements {
-                let element_string = cql_value_obj_to_string(element);
+                let element_string = cql_value_obj_to_string(Some(element));
                 result.push_str(&element_string);
                 result.push_str(", ");
             }
@@ -330,11 +343,11 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             result.push_str("])");
             result
         }
-        CqlValue::Map(pairs) => {
+        Some(CqlValue::Map(pairs)) => {
             let mut result = String::from("Map({");
             for (key, value) in pairs {
-                let key_string = cql_value_obj_to_string(key);
-                let value_string = cql_value_obj_to_string(value);
+                let key_string = cql_value_obj_to_string(Some(key));
+                let value_string = cql_value_obj_to_string(Some(value));
                 result.push_str(&format!("({key_string}: {value_string}), "));
             }
             if result.len() >= 2 {
@@ -343,6 +356,7 @@ pub fn cql_value_obj_to_string(v: &CqlValue) -> String {
             result.push_str("})");
             result
         }
+        None => String::from("None"),
         _ => format!("{v:?}"),
     }
 }
