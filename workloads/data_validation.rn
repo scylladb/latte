@@ -30,6 +30,7 @@
 
 use latte::*;
 
+const RECREATE_KEYSPACE = latte::param!("recreate_keyspace", false);
 const KEYSPACE = latte::param!("keyspace", "latte");
 const TABLE = latte::param!("table", "data_validation");
 const TABLETS = latte::param!("tablets", true);
@@ -43,6 +44,9 @@ const ROWS_PER_PARTITION = latte::param!("rows_per_partition", 1);
 // of different sizes. Example: '95:1,4:2,1:4'
 const PARTITION_SIZES = latte::param!("partition_sizes", "100:1");
 
+const VECTOR_DIM = latte::param!("vector_dim", 5); // small just to showcase, may be 1536 or more
+const USE_VECTOR_TYPE = latte::param!("use_vector_type", true); // allow to disable for old Scylla
+
 const P_STMT = #{
     "INSERT": #{
         "NAME": "p_stmt_data_validation__insert",
@@ -51,14 +55,16 @@ const P_STMT = #{
             col_bool, col_tinyint, col_smallint, col_int, col_bigint, col_float, col_double,
             col_ascii, col_text, col_varchar, col_blob, col_inet, col_uuid, col_timeuuid,
             col_date, col_time, col_timestamp, col_duration, col_decimal, col_varint,
-            col_udt, col_list, col_set, col_map, col_tuple
-        ) VALUES (
+            col_udt, col_list, col_set, col_map, col_tuple` +
+        if USE_VECTOR_TYPE { ", col_vector" } else { "" } +
+        `) VALUES (
             :pk, :ck,
             :col_bool, :col_tinyint, :col_smallint, :col_int, :col_bigint, :col_float, :col_double,
             :col_ascii, :col_text, :col_varchar, :col_blob, :col_inet, :col_uuid, :col_timeuuid,
             :col_date, :col_time, :col_timestamp, :col_duration, :col_decimal, :col_varint,
-            :col_udt, :col_list, :col_set, :col_map, :col_tuple
-        )`,
+            :col_udt, :col_list, :col_set, :col_map, :col_tuple` +
+        if USE_VECTOR_TYPE { ", :col_vector" } else { "" } +
+        ")",
     },
     "GET": #{
         "NAME": "p_stmt_data_validation__get",
@@ -73,7 +79,13 @@ const P_STMT = #{
 };
 
 pub async fn schema(db) {
-    // db.execute(`DROP KEYSPACE ${KEYSPACE}`).await?;
+    if RECREATE_KEYSPACE {
+        println!(
+            "rune-info: Recreating '{keyspace}' keyspace",
+            keyspace=KEYSPACE,
+        );
+        db.execute(`DROP KEYSPACE ${KEYSPACE}`).await?;
+    }
     db.execute(`
         CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
         WITH replication = {
@@ -83,6 +95,12 @@ pub async fn schema(db) {
         AND tablets = {'enabled': ${TABLETS}}
     `).await?;
     db.execute(`CREATE TYPE IF NOT EXISTS ${KEYSPACE}.udt (id bigint, text text)`).await?;
+
+    let vector_def_str = if USE_VECTOR_TYPE {
+        `col_vector vector<float, ${VECTOR_DIM}>,`
+    } else {
+        ""
+    };
     db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE} (
         pk bigint,
         ck bigint,
@@ -113,6 +131,8 @@ pub async fn schema(db) {
         col_set frozen<set<bigint>>,
         col_map map<text, frozen<udt>>,
         col_tuple tuple<bigint, text>,
+
+        ${vector_def_str}
 
         PRIMARY KEY (pk, ck)
     ) WITH compaction = { 'class' : '${COMPACTION_STRATEGY}' }`).await?;
@@ -236,7 +256,16 @@ async fn generate_row_data(db, i) {
     } else {
         [hash(idx+333), text(idx+444, 20)] // as Rune Vector
     } };
-    #{ // Object with attrs as a return value
+    let col_vector = [];
+    if USE_VECTOR_TYPE {
+        for i in 0..VECTOR_DIM {
+            let seed = idx * VECTOR_DIM + i; // make seeds be unique and idempotent
+            col_vector.push(
+                normal_f32(seed, 1234.0, if idx % 2 == 0 { 999.9 } else { 555.0 })
+            );
+        }
+    }
+    let ret = #{ // Object with attrs as a return value
         "pk": pk, "ck": ck, "partition": partition,
         "col_bool": col_bool, "col_tinyint": col_tinyint, "col_smallint": col_smallint,
         "col_int": col_int, "col_bigint": col_bigint, "col_float": col_float, "col_double": col_double,
@@ -252,20 +281,29 @@ async fn generate_row_data(db, i) {
             "col_duration", "col_decimal", "col_varint", "col_udt", "col_list",
             "col_set", "col_map", "col_tuple",
         ]
+    };
+    if USE_VECTOR_TYPE {
+        ret["col_vector"] = col_vector;
+        ret["col_names"].push("col_vector");
     }
+    ret
 }
 
 // User functions
 
 pub async fn insert(db, i) {
     let d = generate_row_data(db, i).await;
-    db.execute_prepared(P_STMT.INSERT.NAME, [
+    let col_data = [
         d.pk, d.ck,
         d.col_bool, d.col_tinyint, d.col_smallint, d.col_int, d.col_bigint, d.col_float, d.col_double,
         d.col_ascii, d.col_text, d.col_varchar, d.col_blob, d.col_inet, d.col_uuid, d.col_timeuuid,
         d.col_date, d.col_time, d.col_timestamp, d.col_duration, d.col_decimal, d.col_varint,
         d.col_udt, d.col_list, d.col_set, d.col_map, d.col_tuple,
-    ]).await?
+    ];
+    if USE_VECTOR_TYPE {
+        col_data.push(d.col_vector);
+    }
+    db.execute_prepared(P_STMT.INSERT.NAME, col_data).await?
 }
 
 pub async fn get(db, i) {
