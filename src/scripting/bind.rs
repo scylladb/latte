@@ -321,6 +321,25 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
             }
             Ok(Some(CqlValue::Tuple(elements)))
         }
+        (Value::Vec(v), ColumnType::Vector { typ, .. }) => {
+            let v = v.borrow_ref().unwrap();
+            let elements = v
+                .as_ref()
+                .iter()
+                .map(|v| {
+                    to_scylla_value(v, typ).and_then(|opt| {
+                        opt.ok_or_else(|| {
+                            Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                format!("{v:?}"),
+                                "ColumnType::Vector".to_string(),
+                                None,
+                            )))
+                        })
+                    })
+                })
+                .try_collect()?;
+            Ok(Some(CqlValue::Vector(elements)))
+        }
         (
             Value::Vec(v),
             ColumnType::Collection {
