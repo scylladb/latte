@@ -259,6 +259,23 @@ fn cql_value_to_rune_value(value: Option<&CqlValue>) -> Result<Value, Box<CassEr
                 )))
             })?,
         )),
+        Some(CqlValue::Vector(vector)) => {
+            let mut rune_vec = RuneVec::new();
+            for item in vector {
+                rune_vec
+                    .push(cql_value_to_rune_value(Some(item))?)
+                    .map_err(|_| {
+                        Box::new(CassError(CassErrorKind::Error(
+                            "Failed to push to Rune vector".to_string(),
+                        )))
+                    })?;
+            }
+            Ok(Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Box::new(CassError(CassErrorKind::Error(
+                    "Failed to create shared vector".to_string(),
+                )))
+            })?))
+        }
         Some(CqlValue::List(list)) => {
             let mut rune_vec = RuneVec::new();
             for item in list {
