@@ -23,14 +23,16 @@ on:
 jobs:
   build-image:
     name: Build ${{ matrix.build.platform }}
-    runs-on: ubuntu-24.04${{ matrix.build.platform == 'linux/arm64/v8' && '-arm' || '' }}
+    runs-on: ${{ matrix.build.runner }}
     strategy:
       matrix:
         build:
           - platform: linux/amd64
             arch_short: amd
+            runner: blacksmith-4vcpu-ubuntu-2404
           - platform: linux/arm64/v8
             arch_short: arm
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
@@ -73,7 +75,7 @@ jobs:
   push-images:
     name: Push Multiarch Images
     needs: build-image
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout
         uses: actions/checkout@v5
