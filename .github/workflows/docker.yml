@@ -56,7 +56,7 @@ jobs:
             --platform ${{ matrix.build.platform }} \
             --provenance false \
             --metadata-file metadata \
-            --output push-by-digest=true,type=image,push=true \
+            --output push-by-digest=true,type=image,oci-mediatypes=true,push=true \
             .
           echo "Metadata file info:"
           cat metadata
