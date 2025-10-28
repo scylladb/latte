@@ -10,7 +10,7 @@ env:
 
 jobs:
   get_tag:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     outputs:
       tag: ${{ steps.version_tag.outputs.tag }}
     steps:
@@ -24,7 +24,7 @@ jobs:
           tagRegex: "(.*)"
 
   release:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Create release
         env:
