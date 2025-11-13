@@ -255,6 +255,9 @@ The following methods are available:
 
 Text data can be loaded from files or resources with functions in the `fs` module:
 
+- `fs::read_split_lines_iter(path, delimiter, do_trim, skip_empty)` – returns an iterator
+  that reads a file line by line, splits each line using the given delimiter,
+  trims each element (optional) and skips empty ones (optional).
 - `fs::read_to_string(file_path)` – returns file contents as a string
 - `fs::read_lines(file_path)` – reads file lines into a vector of strings
 - `fs::read_words(file_path)` – reads file words (split by non-alphabetic characters) into a vector of strings
@@ -278,6 +281,32 @@ pub async fn run(ctx, i) {
     let random_last_name = latte::hash_select(i, ctx.data.last_names);
     // ... use random_last_name in queries
 }
+```
+
+Or example using flexible file lines iterator:
+```rust
+const DATAFILE = latte::param!("datafile", "<path-to>/huge-file.txt");
+
+pub async fn prepare(ctx) {
+    let delimiter = " ";
+    let do_trim = true;
+    let skip_empty = true;
+    let maxsplit = -1; // any negative means "no limit"
+    // NOTE: second element for the 'fs::read_split_lines_iter' may also be empty or partial.
+    let file_iterator = fs::read_split_lines_iter(DATAFILE, [delimiter, maxsplit, do_trim, skip_empty])?;
+    ctx.data.huge_data_set = [];
+    while let Some(words) = file_iterator.next() {
+        let current_words = words?; // unwrap ok/err
+        dbg!(current_words); // optional debug print out of the taken data
+        if !current_words.is_empty() { // may be empty vector if all elements are filtered out
+            ctx.data.huge_data_set.push(current_words)
+        }
+    }
+    dbg!(ctx.data.huge_data_set); // optional debug print out of the processed data
+
+    // ... prepare queries
+}
+...
 ```
 
 ### Parameterizing workloads
