@@ -1,5 +1,6 @@
 use crate::scripting::cass_error::CassError;
 use crate::scripting::context::Context;
+use crate::scripting::cql_types::SplitLinesIterator;
 use rune::{ContextError, Module};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
@@ -90,12 +91,17 @@ fn try_install(
     fs_module.function_meta(functions::read_resource_to_string)?;
     fs_module.function_meta(functions::read_resource_lines)?;
     fs_module.function_meta(functions::read_resource_words)?;
+    let mut iter_module = Module::default();
+    iter_module.ty::<SplitLinesIterator>()?;
+    fs_module.function_meta(functions::read_split_lines_iter)?;
+    iter_module.function_meta(functions::next)?;
 
     rune_ctx.install(&context_module)?;
     rune_ctx.install(&err_module)?;
     rune_ctx.install(&uuid_module)?;
     rune_ctx.install(&latte_module)?;
     rune_ctx.install(&fs_module)?;
+    rune_ctx.install(&iter_module)?;
 
     Ok(())
 }
