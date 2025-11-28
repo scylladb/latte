@@ -59,44 +59,46 @@ user-defined data structures, objects, enums, constants, macros and many more.
 * Prepared queries
 * Programmable data generation
 * Workload parameterization
+* Data validation
+* Retries
+* Reading of data from files
 * Accurate measurement of throughput and response times with error margins
+* Can generate HDR histogram files on the fly for more precise perf measurement
 * Configurable number of connections and threads
-* Rate and concurrency limiters
+* Rate, sine-wave-alike rate and concurrency limiters
 * Progress bars
 * Beautiful text reports
 * Can dump report in JSON
 * Side-by-side comparison of two runs
 * Statistical significance analysis of differences corrected for auto-correlation
 
-## Limitations
-
-Latte is still early stage software under intensive development.
-
-* Query result sets are not exposed yet.
-* The set of data generating functions is tiny and will be extended soon.
-* Backwards compatibility may be broken frequently.
-
 ## Installation
-
-### From deb package
-
-```shell
-dpkg -i latte-<version>.deb
-````
 
 ## From source
 
 1. [Install Rust toolchain](https://rustup.rs/)
-2. Run `cargo install --path .`
+2. Run `RUSTFLAGS="--cfg fetch_extended_version_info" cargo install --path .`
+
+## From release binaries
+
+1. [Open Latte releases page on GitHub](https://github.com/scylladb/latte/releases)
+2. Click drop-down for `Assets` of any of the releases
+3. Download any available binary for a release
+
+## From docker image
+
+1. [Open list of docker images](https://hub.docker.com/r/scylladb/latte/tags)
+2. Pull specific version like `docker pull scylladb/latte:0.42.1-scylladb`
+3. Or pull latest (alias for the greatest specific release) version like `docker pull scylladb/latte:latest`
 
 ## Usage
 
-Start a Cassandra cluster somewhere (can be a local node). Then run:
+Start a DB cluster somewhere (can be a local node). Then run:
 
 ```shell
 latte schema <workload.rn> [<node address>] # create the database schema 
-latte load <workload.rn> [<node address>]   # populate the database with data
-latte run <workload.rn> [-f <function>] [<node address>]  # execute the workload and measure the performance 
+latte run -f write -d 1000 <workload.rn> [<node address>] # populate the DB with 1000 rows
+latte run -f read -d 30s <workload.rn> [<node address>] # execute the read workload for 30 seconds
  ```
 
 You can find a few example workload files in the `workloads` folder.
@@ -104,8 +106,9 @@ For convenience, you can place workload files under `/usr/share/latte/workloads`
 so latte can find them regardless of the current working directory. You can also set up custom workload locations
 by setting `LATTE_WORKLOAD_PATH` environment variable.
 
-Latte produces text reports on stdout but also saves all data to a json file in the working directory. The name of the
-file is created automatically from the parameters of the run and a timestamp.
+Latte may produce text reports on stdout and also save all data to a json file in the working directory.
+To enable it use `--generate-report` latte parameter.
+The name of the file is created automatically from the parameters of the run and a timestamp.
 
 You can display the results of a previous run with `latte show`:
 
@@ -143,22 +146,29 @@ with `-f` / `--function` parameter.
 ### Schema creation
 
 You can (re)create your own keyspaces and tables needed by the benchmark in the `schema` function.
-The `schema` function should also drop the old schema if present.
 The `schema` function is executed by running `latte schema` command.
 
 ```rust
+const KEYSPACE = latte::param!("keyspace", "latte");
+const TABLETS = latte::param!("tablets", true); // ScyllaDB-specific
+const REPLICATION_FACTOR = latte::param!("replication_factor", 3);
+
 pub async fn schema(ctx) {
-    ctx.execute("CREATE KEYSPACE IF NOT EXISTS test \
-                 WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 }").await?;
-    ctx.execute("DROP TABLE IF NOT EXISTS test.test").await?;
-    ctx.execute("CREATE TABLE test.test(id bigint, data varchar)").await?;
+    ctx.execute(`
+        CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE} WITH REPLICATION = {
+            'class': 'NetworkTopologyStrategy',
+            'replication_factor': ${REPLICATION_FACTOR}
+        } 
+        AND tablets = {'enabled': ${TABLETS}}
+    `).await?;
+    ctx.execute("CREATE TABLE IF NOT EXISTS test.test(id bigint, data varchar)").await?;
 }
 ```
 
 ### Prepared statements
 
-Calling `ctx.execute` is not optimal, because it doesn't use prepared statements. You can prepare statements and
-register them on the context object in the `prepare`
+Calling `ctx.execute` is not optimal, because it doesn't use prepared statements.
+You can prepare statements and register them on the context object in the `prepare`
 function:
 
 ```rust
@@ -189,12 +199,18 @@ pub async fn run(ctx, i) {
 }
 ```
 
-### Populating the database
+### Data population
 
-Read queries are more interesting when they return non-empty result sets.
+There are 2 possible ways to populate data.
+First is for simple scenarios using `latte load` command
+which utilizes `load`, `erase` and `prepare` rune functions.
 
-To be able to load data into tables with `latte load`, you need to set the number of load cycles on the context object
-and define the `load` function:
+Second is when we run complex test scenario with multiple latte commands.
+
+## Simple way of populating the database for single-latte command testings
+
+To be able to load data into tables with `latte load` command,
+you need to set the number of load cycles on the context object and define the `load` function:
 
 ```rust
 pub async fn prepare(ctx) {
@@ -206,14 +222,51 @@ pub async fn load(ctx, i) {
 }
 ```
 
-We also recommend defining the `erase` function to erase the data before loading so that you always get the same
-dataset regardless of the data that were present in the database before:
+It is also recommended to define the `erase` function to erase the data before loading
+so that you always get the same dataset regardless of the data that were present in the database before:
 
 ```rust
 pub async fn erase(ctx) {
     ctx.execute("TRUNCATE TABLE test.test").await
 }
 ```
+
+## Enhanced way of populating your DB for complex test scenarios
+
+Assume we have 2 latte executer machines/VMs and we need to populate 1 billion of rows.
+We do:
+
+- Define required `schema` function as shown above
+- Define optional `prepare` function which runs once before the latte workload and useful
+  for setting and pre-calculating things needed to be done once for whole workload.
+- Define any public-facing rune function (name must not overlap with the reserved ones).
+  - If we plan to have just 1 rune function, we can call it `run` and avoid specifying the `-f` parameter.
+  - If we plan to have 2+ rune functions then we use the `-f / --function ` latte parameter.
+
+So, assume we have following in our rune script:
+
+```rust
+const ROW_COUNT = latte::param!("row_count", 1000000); // use it to define the expected row count in cluster
+const BLOB_SIZE = latte::param!("blob_size", 1000);
+const P_STMT_INSERT = "p_stmt__insert";
+
+pub async fn write(ctx, i) {
+    let idx = i % ROW_COUNT;
+    let pk = text(idx, 36);
+    let ck = text(idx + hash(idx), 36);
+    let data = blob(idx, BLOB_SIZE);
+    ctx.execute_prepared(P_STMT_INSERT, [pk, ck, data]).await?
+}
+```
+
+Then we populate a DB cluster using 2 latte commands as following:
+
+```bash
+$ latte run <rune-script> <addr> -q -f write -d 500000000 --start-cycle 0
+$ latte run <rune-script> <addr> -q -f write -d 500000000 --start-cycle 500000000
+```
+
+Above 2 commands will write 2 halfs of our data set.
 
 ### Generating data
 
@@ -228,6 +281,7 @@ are pure, i.e. invoking them multiple times with the same parameters yields alwa
 - `latte::hash_select(i, vector)` – selects an item from a vector based on a hash
 - `latte::blob(i, len)` – generates a random binary blob of length `len`
 - `latte::normal(i, mean, std_dev)` – generates a floating point number from a normal distribution
+- `latte::normal_f32(i, mean, std_dev)` – generates a floating point 32bit number from a normal distribution
 - `latte::uniform(i, min, max)` – generates a floating point number from a uniform distribution
 - `latte::text(i, length)` – generates a random string
 - `latte::vector(length, function)` – generates a vector of given length with a function
@@ -362,7 +416,7 @@ As a result we will be able to get multi-row partitions in a requested size prop
 
 Number of presets is unlimited. Any rune script may use multiple different presets for different tables.
 
-### Validating number of rows for select queries
+### Validating number of rows for SELECT queries
 
 It is possible to validate number of rows.
 
@@ -414,9 +468,9 @@ Example using just one validation element (expected strict number of rows):
   }
 ```
 
-#### Validation error messages examples
+#### Row count validation error messages examples
 
-Standard validation error message for strict row number:
+Standard row count validation error message for strict row number:
 ```
 2025-05-26 15:20:22.268: [ERROR][Attempt 0/0] Expected '0' rows in the response, but got '1'. \
   Query: "SELECT pk, ck FROM latte.validation WHERE pk = :pk LIMIT 1" with params [BigInt(4459089576838673207)]
@@ -434,6 +488,61 @@ Row number range without custom error message:
 2025-05-26 15:21:35.281: [ERROR][Attempt 0/0] Expected '3<=N<=4' rows in the response, but got '6'. \
   Query: "SELECT pk, ck FROM latte.validation WHERE pk = :pk LIMIT :max_limit" with params [BigInt(4459089576838673207), Int(16)]
 ```
+
+### Validating data taken from SELECT queries
+
+Complex example of the data validation is available
+at the [workloads/data_validation.rn](https://github.com/scylladb/latte/blob/update-readme/workloads/data_validation.rn)
+rune script.
+Simpler example of data validation is following:
+
+```rust
+async fn generate_row_data(db, i) { // may be equally used for 'write' and 'read' operations
+    let idx = i % ROW_COUNT;
+    let pk = hash(idx);
+    let div3 = idx % 3;
+    let col_bool = if div3 == 0 { None } else { div3 == 1 };
+    let col_blob = if idx % 16 == 0 { None } else { blob(idx + 400, hash_range(idx, 64)) };
+
+    let ret = #{ // Object with attrs as a return value
+        "pk": pk,
+        "col_bool": col_bool,
+        "col_blob": col_blob,
+    };
+    ret
+}
+
+pub async fn read(db, i) {
+    let d = generate_row_data(db, i).await;
+    let rows = db.execute_prepared_with_result(P_STMT.GET.NAME, [d.pk]).await?;
+    for col_name in d.col_names {
+        let actual = rows.0.get(col_name)?;
+        let expected = d.get(col_name)?;
+        if !is_none(expected) {
+            if actual != expected {
+                db.signal_failure(
+                    `Column '${col_name}'. Actual value is '${actual}', but expected is '${expected}'`
+                ).await?;
+            }
+        } else {
+            assert!(is_none(actual));
+        }
+    }
+}
+```
+
+The `assert` macros stops stress execution right away if condition result is `false`.
+
+The `ctx.signal_failure(...)` context function allows to handle data validation errors gracefully.
+
+For example, if we assume that data update is racy,
+we may configure retries to mitigate possible temporary data validation failures:
+
+```bash
+$ latte run ... --validation-strategy=retry ...
+```
+
+Supported values for the `--validation-strategy` parameters are `fail-fast` (default), `retry` and `ignore`.
 
 ### Mixing workloads
 
@@ -466,3 +575,6 @@ Errors during execution of a workload script are divided into three classes:
 ### Other functions
 
 - `ctx.elapsed_secs()` – returns the number of seconds elapsed since starting the workload, as float
+- `ctx.now_timestamp()` – generates a timestamp with `now` value
+- `ctx.get_datacenters()` – returns list of discovered datacenters for a DB cluster
+- `ctx.is_none(v)` – checks the provided rune object for having a value and returns boolean result
