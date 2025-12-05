@@ -222,7 +222,9 @@ async fn run(conf: RunCommand) -> Result<()> {
     let mut program = load_workload_script(&conf.workload, &conf.params)?;
 
     let mut functions = Vec::new();
+    let mut functions_to_invoke = Vec::new();
     for f in &conf.functions {
+        functions_to_invoke.push((f.name.as_str(), f.weight));
         let function = FnRef::new(f.name.as_str());
         if !program.has_function(&function) {
             eprintln!(
@@ -235,6 +237,22 @@ async fn run(conf: RunCommand) -> Result<()> {
     }
 
     let (mut session, cluster_info) = connect(&conf.connection).await?;
+
+    // NOTE: Add info about the target rune functions to the context
+    //       for the more flexible tweaking of the 'prepare' rune function.
+    match &mut session.data {
+        rune::Value::Object(shared_obj) => {
+            let _ = shared_obj.borrow_mut()?.insert(
+                rune::alloc::String::try_from("functions_to_invoke")?,
+                rune::to_value(functions_to_invoke)?,
+            );
+        }
+        _ => {
+            eprintln!("error: session.data is not a Rune Object");
+            exit(255);
+        }
+    }
+
     if let Some(cluster_info) = cluster_info {
         conf.cluster_name = Some(cluster_info.name);
         conf.db_version = Some(cluster_info.db_version);

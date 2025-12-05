@@ -2,6 +2,7 @@ use crate::scripting::cass_error::CassError;
 use hdrhistogram::serialization::interval_log::IntervalLogWriterError;
 use hdrhistogram::serialization::V2DeflateSerializeError;
 use rune::alloc;
+use rune::runtime::{AccessError, VmError};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -48,6 +49,12 @@ pub enum LatteError {
 
     #[error("Memory allocation failure: {0}")]
     OutOfMemory(#[from] alloc::Error),
+
+    #[error("Rune VmError: {0}")]
+    RuneVmError(#[from] VmError),
+
+    #[error("Rune AccessError: {0}")]
+    RuneAccessError(#[from] AccessError),
 }
 
 impl From<CassError> for LatteError {
