@@ -199,6 +199,26 @@ pub async fn run(ctx, i) {
 }
 ```
 
+To tweak prepared statements logic based on the rune functions we plan to use with workload
+we can do following:
+
+```rust
+pub async fn prepare(ctx) {
+    if !is_none(ctx.data.get("functions_to_invoke")) {
+        for item in ctx.data.functions_to_invoke {
+            // NOTE: 'item' is tuple like '(fn_name_as_str, fn_weight_as_f64)'
+            let fn_name = item.0;
+            if fn_name == "simple" {
+                println!("rune-info: SKIP heavy operations preparing 'simple' function.");
+                return
+            }
+        }
+    }
+    ...
+    // Some heavy operations
+}
+```
+
 ### Data population
 
 There are 2 possible ways to populate data.
