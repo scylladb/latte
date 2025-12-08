@@ -1,6 +1,6 @@
+use super::cass_error::{CassError, CassErrorKind};
+use super::context::Context;
 use crate::config::ConnectionConf;
-use crate::scripting::cass_error::{CassError, CassErrorKind};
-use crate::scripting::context::Context;
 use openssl::ssl::{SslContextBuilder, SslFiletype, SslMethod, SslVerifyMode};
 use scylla::client::session::TlsContext;
 use scylla::client::PoolSize;
