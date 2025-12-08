@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 pub mod retry_error;
 mod row_distribution;
+pub mod rune_uuid;
 mod split_lines_iter;
 
 #[cfg(feature = "cql")]
@@ -61,8 +62,8 @@ fn try_install(
     err_module.function_meta(CassError::string_display)?;
 
     let mut uuid_module = Module::default();
-    uuid_module.ty::<cql_types::Uuid>()?;
-    uuid_module.function_meta(cql_types::Uuid::string_display)?;
+    uuid_module.ty::<rune_uuid::Uuid>()?;
+    uuid_module.function_meta(rune_uuid::Uuid::string_display)?;
 
     let mut latte_module = Module::with_crate("latte")?;
     latte_module.macro_("param", move |ctx, ts| functions::param(ctx, &params, ts))?;

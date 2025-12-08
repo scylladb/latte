@@ -1,6 +1,7 @@
 use super::cass_error::{CassError, CassErrorKind};
 use super::context::Context;
-use super::cql_types::{Int8, Uuid};
+use super::cql_types::Int8;
+use crate::scripting::rune_uuid::Uuid;
 use crate::scripting::Resources;
 use chrono::Utc;
 use metrohash::MetroHash64;
