@@ -12,6 +12,8 @@ pub mod context;
 mod cql_types;
 mod functions;
 
+pub use cass_error as db_error;
+
 #[derive(RustEmbed)]
 #[folder = "resources/"]
 struct Resources;

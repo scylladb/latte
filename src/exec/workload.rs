@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use crate::config::ValidationStrategy;
 use crate::error::LatteError;
-use crate::scripting::cass_error::{CassError, CassErrorKind};
 use crate::scripting::context::{handle_retry_error, Context};
+use crate::scripting::db_error::{DbError, DbErrorKind};
 use crate::stats::latency::LatencyDistributionRecorder;
 use crate::stats::session::SessionStats;
 use rand::distributions::{Distribution, WeightedIndex};
@@ -189,7 +189,7 @@ impl Program {
     }
 
     /// Checks if Rune function call result is an error and if so, converts it into [`LatteError`].
-    /// Cassandra errors are returned as [`LatteError::Cassandra`].
+    /// Database errors are returned as [`LatteError::Database`].
     /// All other errors are returned as [`LatteError::FunctionResult`].
     /// If result is not an `Err`, it is returned as-is.
     ///
@@ -201,9 +201,9 @@ impl Program {
             Value::Result(result) => match result.take().unwrap() {
                 Ok(value) => Ok(value),
                 Err(Value::Any(e)) => {
-                    if e.borrow_ref().unwrap().type_hash() == CassError::type_hash() {
-                        let e = e.take_downcast::<CassError>().unwrap();
-                        return Err(LatteError::Cassandra(Box::new(e)));
+                    if e.borrow_ref().unwrap().type_hash() == DbError::type_hash() {
+                        let e = e.take_downcast::<DbError>().unwrap();
+                        return Err(LatteError::Database(Box::new(e)));
                     }
 
                     let e = Value::Any(e);
@@ -458,7 +458,7 @@ impl Workload {
         let mut is_ok = false;
         let retry_number = self.context.retry_number;
         while current_retries_counter < retry_number {
-            let current_err: CassError;
+            let current_err: DbError;
             // NOTE: Create a separate scope inside of the loop
             //       to be able to run additional retry-related async context functions.
             {
@@ -476,8 +476,8 @@ impl Workload {
                         is_ok = true;
                         break;
                     }
-                    Err(LatteError::Cassandra(boxed_err))
-                        if matches!(boxed_err.0, CassErrorKind::Overloaded(_, _)) =>
+                    Err(LatteError::Database(boxed_err))
+                        if matches!(boxed_err.0, DbErrorKind::Overloaded(..)) =>
                     {
                         // don't stop on overload errors;
                         // they are being counted by the context stats anyways
@@ -488,8 +488,8 @@ impl Workload {
                     //       which may be called anytime in a rune function.
                     //       May be used for data validation and other needs which require re-run
                     //       of a rune function.
-                    Err(LatteError::Cassandra(boxed_err))
-                        if matches!(&boxed_err.0, CassErrorKind::CustomError(_)) =>
+                    Err(LatteError::Database(boxed_err))
+                        if matches!(boxed_err.0, DbErrorKind::CustomError(_)) =>
                     {
                         state.operation_failed(function, duration);
                         match &self.context.validation_strategy {
@@ -497,7 +497,7 @@ impl Workload {
                                 current_err = *boxed_err;
                             }
                             ValidationStrategy::FailFast => {
-                                return Err(LatteError::Cassandra(boxed_err))
+                                return Err(LatteError::Database(boxed_err))
                             }
                             ValidationStrategy::Ignore => {
                                 current_err = *boxed_err;
@@ -521,7 +521,7 @@ impl Workload {
         if is_ok {
             return Ok((cycle, end_time));
         }
-        Err(CassError::query_retries_exceeded(self.context.retry_number).into())
+        Err(DbError::query_retries_exceeded(self.context.retry_number).into())
     }
 
     /// Returns the reference to the contained context.
