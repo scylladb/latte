@@ -9,8 +9,9 @@ use std::time::Instant;
 
 use crate::config::ValidationStrategy;
 use crate::error::LatteError;
-use crate::scripting::context::{handle_retry_error, Context};
+use crate::scripting::context::Context;
 use crate::scripting::db_error::{DbError, DbErrorKind};
+use crate::scripting::retry_error::handle_retry_error;
 use crate::stats::latency::LatencyDistributionRecorder;
 use crate::stats::session::SessionStats;
 use rand::distributions::{Distribution, WeightedIndex};
