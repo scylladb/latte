@@ -1,6 +1,6 @@
-use crate::scripting::cass_error::{CassError, CassErrorKind};
-use crate::scripting::context::Context;
-use crate::scripting::cql_types::{Int8, SplitLinesIterator, Uuid};
+use super::cass_error::{CassError, CassErrorKind};
+use super::context::Context;
+use super::cql_types::{Int8, SplitLinesIterator, Uuid};
 use crate::scripting::Resources;
 use chrono::Utc;
 use metrohash::MetroHash64;

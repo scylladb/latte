@@ -1,8 +1,8 @@
+use super::bind::to_scylla_query_params;
+use super::cass_error::{CassError, CassErrorKind};
+use super::connect::ClusterInfo;
 use crate::config::{RetryInterval, ValidationStrategy};
 use crate::error::LatteError;
-use crate::scripting::bind::to_scylla_query_params;
-use crate::scripting::cass_error::{CassError, CassErrorKind};
-use crate::scripting::connect::ClusterInfo;
 use crate::stats::session::SessionStats;
 use chrono::Utc;
 use itertools::enumerate;

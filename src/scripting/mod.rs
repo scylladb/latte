@@ -1,18 +1,16 @@
-use crate::scripting::cass_error::CassError;
-use crate::scripting::context::Context;
-use crate::scripting::cql_types::SplitLinesIterator;
 use rune::{ContextError, Module};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
 
-mod bind;
-pub mod cass_error;
-pub mod connect;
-pub mod context;
-mod cql_types;
-mod functions;
+#[cfg(feature = "cql")]
+mod cql;
 
-pub use cass_error as db_error;
+#[cfg(feature = "cql")]
+pub use cql::cass_error as db_error;
+#[cfg(feature = "cql")]
+pub use cql::connect;
+#[cfg(feature = "cql")]
+pub use cql::context;
 
 #[derive(RustEmbed)]
 #[folder = "resources/"]
@@ -22,10 +20,17 @@ pub fn install(rune_ctx: &mut rune::Context, params: HashMap<String, String>) {
     try_install(rune_ctx, params).unwrap()
 }
 
+#[cfg(feature = "cql")]
 fn try_install(
     rune_ctx: &mut rune::Context,
     params: HashMap<String, String>,
 ) -> Result<(), ContextError> {
+    use cql::cass_error::CassError;
+    use cql::context::Context;
+    use cql::cql_types;
+    use cql::cql_types::SplitLinesIterator;
+    use cql::functions;
+
     let mut context_module = Module::default();
     context_module.ty::<Context>()?;
     context_module.function_meta(functions::prepare)?;

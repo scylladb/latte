@@ -43,7 +43,7 @@ impl Uuid {
 }
 
 pub mod i64 {
-    use crate::scripting::cql_types::{Float32, Int16, Int32, Int8};
+    use super::{Float32, Int16, Int32, Int8};
 
     /// Converts a Rune integer to i8 (Cassandra tinyint)
     #[rune::function(instance)]
@@ -83,7 +83,7 @@ pub mod i64 {
 }
 
 pub mod f64 {
-    use crate::scripting::cql_types::{Float32, Int16, Int32, Int8};
+    use super::{Float32, Int16, Int32, Int8};
 
     #[rune::function(instance)]
     pub fn to_i8(value: f64) -> Int8 {
