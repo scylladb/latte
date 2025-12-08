@@ -1,4 +1,4 @@
-use crate::scripting::cass_error::CassError;
+use crate::scripting::db_error::DbError;
 use hdrhistogram::serialization::interval_log::IntervalLogWriterError;
 use hdrhistogram::serialization::V2DeflateSerializeError;
 use rune::alloc;
@@ -14,8 +14,8 @@ pub enum LatteError {
     #[error("Context data could not be deserialized: {0}")]
     ContextDataDecode(#[from] rmp_serde::decode::Error),
 
-    #[error("Cassandra error: {0}")]
-    Cassandra(#[source] Box<CassError>),
+    #[error("Database error: {0}")]
+    Database(#[source] Box<DbError>),
 
     #[error("Failed to read file {0:?}: {1}")]
     ScriptRead(PathBuf, #[source] rune::source::FromPathError),
@@ -57,15 +57,15 @@ pub enum LatteError {
     RuneAccessError(#[from] AccessError),
 }
 
-impl From<CassError> for LatteError {
-    fn from(err: CassError) -> Self {
-        LatteError::Cassandra(Box::new(err))
+impl From<DbError> for LatteError {
+    fn from(err: DbError) -> Self {
+        LatteError::Database(Box::new(err))
     }
 }
 
-impl From<Box<CassError>> for LatteError {
-    fn from(err: Box<CassError>) -> Self {
-        LatteError::Cassandra(err)
+impl From<Box<DbError>> for LatteError {
+    fn from(err: Box<DbError>) -> Self {
+        LatteError::Database(err)
     }
 }
 

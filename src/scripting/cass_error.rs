@@ -371,3 +371,6 @@ impl Display for QueryInfo {
         )
     }
 }
+
+pub type DbError = CassError;
+pub type DbErrorKind = CassErrorKind;
