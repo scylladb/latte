@@ -3,6 +3,7 @@ use rust_embed::RustEmbed;
 use std::collections::HashMap;
 
 mod row_distribution;
+mod split_lines_iter;
 
 #[cfg(feature = "cql")]
 mod cql;
@@ -30,7 +31,6 @@ fn try_install(
     use cql::cass_error::CassError;
     use cql::context::Context;
     use cql::cql_types;
-    use cql::cql_types::SplitLinesIterator;
     use cql::functions;
 
     let mut context_module = Module::default();
@@ -101,9 +101,9 @@ fn try_install(
     fs_module.function_meta(functions::read_resource_lines)?;
     fs_module.function_meta(functions::read_resource_words)?;
     let mut iter_module = Module::default();
-    iter_module.ty::<SplitLinesIterator>()?;
-    fs_module.function_meta(functions::read_split_lines_iter)?;
-    iter_module.function_meta(functions::next)?;
+    iter_module.ty::<split_lines_iter::SplitLinesIterator>()?;
+    fs_module.function_meta(split_lines_iter::read_split_lines_iter)?;
+    iter_module.function_meta(split_lines_iter::next)?;
 
     rune_ctx.install(&context_module)?;
     rune_ctx.install(&err_module)?;

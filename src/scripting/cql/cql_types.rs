@@ -2,10 +2,7 @@ use metrohash::MetroHash128;
 use rune::alloc::fmt::TryWrite;
 use rune::runtime::VmResult;
 use rune::{vm_write, Any};
-use std::fs::File;
 use std::hash::Hash;
-use std::io;
-use std::io::{BufRead, BufReader};
 use uuid::{Variant, Version};
 
 #[derive(Clone, Debug, Any)]
@@ -114,72 +111,5 @@ pub mod f64 {
     #[rune::function(instance)]
     pub fn clamp(value: f64, min: f64, max: f64) -> f64 {
         value.clamp(min, max)
-    }
-}
-
-/// Iterator that reads a file line by line and splits each line using the given delimiter.
-/// This provides memory-efficient processing of large files by yielding one split line at a time.
-#[derive(Any, Debug)]
-pub struct SplitLinesIterator {
-    reader: BufReader<File>,
-    delimiter: String,
-    maxsplit: i64,
-    do_trim: bool,
-    skip_empty: bool,
-}
-
-impl SplitLinesIterator {
-    pub fn new(
-        path: &str,
-        delimiter: &str,
-        maxsplit: i64,
-        do_trim: bool,
-        skip_empty: bool,
-    ) -> io::Result<Self> {
-        let file = File::open(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open file {path}: {e}")));
-        match file {
-            Ok(file) => {
-                let reader = BufReader::new(file);
-                Ok(SplitLinesIterator {
-                    reader,
-                    delimiter: delimiter.to_string(),
-                    maxsplit,
-                    do_trim,
-                    skip_empty,
-                })
-            }
-            Err(e) => {
-                panic!("{}", e)
-            }
-        }
-    }
-}
-
-impl Iterator for SplitLinesIterator {
-    type Item = io::Result<Vec<String>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
-            Ok(0) => None, // EOF
-            Ok(_) => {
-                let parts: Vec<String> = line
-                    .splitn(
-                        if self.maxsplit < 0 {
-                            usize::MAX
-                        } else {
-                            (self.maxsplit + 1).try_into().unwrap()
-                        },
-                        &self.delimiter,
-                    )
-                    .map(|s| if self.do_trim { s.trim() } else { s })
-                    .filter(|s| !(self.skip_empty && s.is_empty()))
-                    .map(|s| s.to_string())
-                    .collect();
-                Some(Ok(parts))
-            }
-            Err(e) => Some(Err(e)),
-        }
     }
 }

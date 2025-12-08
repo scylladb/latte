@@ -1,6 +1,6 @@
 use super::cass_error::{CassError, CassErrorKind};
 use super::context::Context;
-use super::cql_types::{Int8, SplitLinesIterator, Uuid};
+use super::cql_types::{Int8, Uuid};
 use crate::scripting::Resources;
 use chrono::Utc;
 use metrohash::MetroHash64;
@@ -264,70 +264,6 @@ pub fn read_resource_words(path: &str) -> io::Result<Vec<String>> {
         .split(|c: char| !c.is_alphabetic())
         .map(|s| s.to_string())
         .collect())
-}
-
-#[rune::function(instance)]
-pub fn next(mut iter: Mut<SplitLinesIterator>) -> Option<io::Result<Vec<String>>> {
-    iter.next()
-}
-
-/// Creates an iterator that reads a file line by line and splits each line using the given delimiter.
-/// Returns an iterator that yields Vec<String> for each line allowing to skip empty elements.
-#[rune::function]
-pub fn read_split_lines_iter(
-    path: &str,
-    // NOTE: "params" expects following elements:
-    // delimiter: &str,
-    // maxsplit: i64,
-    // do_trim: bool,    // per element after split
-    // skip_empty: bool, // skip empty elements in a vector of a line substrings, empty vector possible
-    params: Vec<Value>,
-) -> io::Result<SplitLinesIterator> {
-    let mut delimiter: String = " ".to_string();
-    let mut maxsplit = -1;
-    let mut do_trim = true;
-    let mut skip_empty = true;
-    match params.as_slice() {
-        // (str): delimiter
-        [Value::String(custom_delimiter)] => {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-        }
-        // (int): maxsplit
-        [Value::Integer(custom_maxsplit)] => {
-            maxsplit = *custom_maxsplit;
-        }
-        // (bool): do_trim
-        [Value::Bool(custom_do_trim)] => {
-            do_trim = *custom_do_trim;
-        }
-        // (bool, bool): do_trim, skip_empty
-        [Value::Bool(custom_do_trim), Value::Bool(custom_skip_empty)] => {
-            do_trim = *custom_do_trim;
-            skip_empty = *custom_skip_empty;
-        }
-        // (str, int): delimiter, maxsplit
-        [Value::String(custom_delimiter), Value::Integer(custom_maxsplit)] => {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-            maxsplit = *custom_maxsplit;
-        }
-        // (str, int, bool): delimiter, maxsplit, do_trim
-        [Value::String(custom_delimiter), Value::Integer(custom_maxsplit), Value::Bool(custom_do_trim)] =>
-        {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-            maxsplit = *custom_maxsplit;
-            do_trim = *custom_do_trim;
-        }
-        // (str, int, bool, bool): delimiter, maxsplit, do_trim, skip_empty
-        [Value::String(custom_delimiter), Value::Integer(custom_maxsplit), Value::Bool(custom_do_trim), Value::Bool(custom_skip_empty)] =>
-        {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-            maxsplit = *custom_maxsplit;
-            do_trim = *custom_do_trim;
-            skip_empty = *custom_skip_empty;
-        }
-        _ => panic!("Invalid arguments for read_split_lines_iter"),
-    }
-    SplitLinesIterator::new(path, &delimiter, maxsplit, do_trim, skip_empty)
 }
 
 #[rune::function(instance)]
