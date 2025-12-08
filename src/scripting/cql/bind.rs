@@ -1,7 +1,7 @@
 //! Functions for binding rune values to CQL parameters
 
 use super::cass_error::{CassError, CassErrorKind};
-use super::cql_types::Uuid;
+use crate::scripting::rune_uuid::Uuid;
 use chrono::{NaiveDate, NaiveTime};
 use once_cell::sync::Lazy;
 use regex::Regex;
