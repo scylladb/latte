@@ -9,6 +9,8 @@ mod row_distribution;
 pub mod rune_uuid;
 mod split_lines_iter;
 
+#[cfg(feature = "alternator")]
+mod alternator;
 #[cfg(feature = "cql")]
 mod cql;
 
@@ -18,6 +20,13 @@ pub use cql::cass_error as db_error;
 pub use cql::connect;
 #[cfg(feature = "cql")]
 pub use cql::context;
+
+#[cfg(feature = "alternator")]
+pub use alternator::alternator_error as db_error;
+#[cfg(feature = "alternator")]
+pub use alternator::connect;
+#[cfg(feature = "alternator")]
+pub use alternator::context;
 
 #[derive(RustEmbed)]
 #[folder = "resources/"]
@@ -66,6 +75,28 @@ fn try_install(
     latte_module.function_meta(cql_types::f64::to_f32)?;
     latte_module.function_meta(cql_types::f64::clamp)?;
 
+    let mut fs_module = init_fs_module()?;
+    let iter_module = init_iter_module(&mut fs_module)?;
+
+    rune_ctx.install(&context_module)?;
+    rune_ctx.install(&err_module)?;
+    rune_ctx.install(&uuid_module)?;
+    rune_ctx.install(&latte_module)?;
+    rune_ctx.install(&fs_module)?;
+    rune_ctx.install(&iter_module)?;
+
+    Ok(())
+}
+
+#[cfg(feature = "alternator")]
+fn try_install(
+    rune_ctx: &mut rune::Context,
+    params: HashMap<String, String>,
+) -> Result<(), ContextError> {
+    let context_module = init_context_module()?;
+    let err_module = init_error_module()?;
+    let uuid_module = init_uuid_module()?;
+    let latte_module = init_latte_module(params)?;
     let mut fs_module = init_fs_module()?;
     let iter_module = init_iter_module(&mut fs_module)?;
 
