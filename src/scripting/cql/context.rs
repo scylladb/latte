@@ -292,7 +292,7 @@ fn cql_value_to_rune_value(value: Option<&CqlValue>) -> Result<Value, Box<CassEr
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
 pub struct Context {
-    start_time: TryLock<Instant>,
+    pub start_time: TryLock<Instant>,
     // NOTE: 'session' is defined as optional for being able to test methods
     // which don't 'depend on'/'use' the 'session' object.
     session: Option<Arc<Session>>,
@@ -472,11 +472,6 @@ impl Context {
                 "'session' is not defined".to_string(),
             ))),
         }
-    }
-
-    pub async fn signal_failure(&self, message: &str) -> Result<(), CassError> {
-        let err = CassError(CassErrorKind::CustomError(message.to_string()));
-        Err(err)
     }
 
     /// Executes an ad-hoc CQL statement with no parameters. Does not prepare.
@@ -827,10 +822,6 @@ impl Context {
                 "'session' is not defined".to_string(),
             ))),
         }
-    }
-
-    pub fn elapsed_secs(&self) -> f64 {
-        self.start_time.try_lock().unwrap().elapsed().as_secs_f64()
     }
 
     /// Returns the current accumulated request stats snapshot and resets the stats.

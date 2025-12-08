@@ -2,6 +2,7 @@ use rune::{ContextError, Module};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
 
+mod functions_common;
 pub mod retry_error;
 mod row_distribution;
 pub mod rune_uuid;
@@ -38,7 +39,7 @@ fn try_install(
     let mut context_module = Module::default();
     context_module.ty::<Context>()?;
     context_module.function_meta(functions::prepare)?;
-    context_module.function_meta(functions::signal_failure)?;
+    context_module.function_meta(functions_common::signal_failure)?;
 
     // NOTE: 1st group of query-oriented functions - without usage of prepared statements
     context_module.function_meta(functions::execute)?;
@@ -55,7 +56,7 @@ fn try_install(
     context_module.ty::<row_distribution::Partition>()?;
     context_module.function_meta(row_distribution::get_partition_info)?;
     context_module.function_meta(functions::get_datacenters)?;
-    context_module.function_meta(functions::elapsed_secs)?;
+    context_module.function_meta(functions_common::elapsed_secs)?;
 
     let mut err_module = Module::default();
     err_module.ty::<CassError>()?;
@@ -66,22 +67,24 @@ fn try_install(
     uuid_module.function_meta(rune_uuid::Uuid::string_display)?;
 
     let mut latte_module = Module::with_crate("latte")?;
-    latte_module.macro_("param", move |ctx, ts| functions::param(ctx, &params, ts))?;
+    latte_module.macro_("param", move |ctx, ts| {
+        functions_common::param(ctx, &params, ts)
+    })?;
 
-    latte_module.function_meta(functions::blob)?;
-    latte_module.function_meta(functions::text)?;
-    latte_module.function_meta(functions::vector)?;
-    latte_module.function_meta(functions::join)?;
-    latte_module.function_meta(functions::now_timestamp)?;
-    latte_module.function_meta(functions::hash)?;
-    latte_module.function_meta(functions::hash2)?;
-    latte_module.function_meta(functions::hash_range)?;
-    latte_module.function_meta(functions::hash_select)?;
-    latte_module.function_meta(functions::uuid)?;
-    latte_module.function_meta(functions::normal)?;
-    latte_module.function_meta(functions::normal_f32)?;
-    latte_module.function_meta(functions::uniform)?;
-    latte_module.function_meta(functions::is_none)?;
+    latte_module.function_meta(functions_common::blob)?;
+    latte_module.function_meta(functions_common::text)?;
+    latte_module.function_meta(functions_common::vector)?;
+    latte_module.function_meta(functions_common::join)?;
+    latte_module.function_meta(functions_common::now_timestamp)?;
+    latte_module.function_meta(functions_common::hash)?;
+    latte_module.function_meta(functions_common::hash2)?;
+    latte_module.function_meta(functions_common::hash_range)?;
+    latte_module.function_meta(functions_common::hash_select)?;
+    latte_module.function_meta(functions_common::uuid)?;
+    latte_module.function_meta(functions_common::normal)?;
+    latte_module.function_meta(functions_common::normal_f32)?;
+    latte_module.function_meta(functions_common::uniform)?;
+    latte_module.function_meta(functions_common::is_none)?;
 
     latte_module.function_meta(cql_types::i64::to_i32)?;
     latte_module.function_meta(cql_types::i64::to_i16)?;
@@ -96,12 +99,12 @@ fn try_install(
     latte_module.function_meta(cql_types::f64::clamp)?;
 
     let mut fs_module = Module::with_crate("fs")?;
-    fs_module.function_meta(functions::read_to_string)?;
-    fs_module.function_meta(functions::read_lines)?;
-    fs_module.function_meta(functions::read_words)?;
-    fs_module.function_meta(functions::read_resource_to_string)?;
-    fs_module.function_meta(functions::read_resource_lines)?;
-    fs_module.function_meta(functions::read_resource_words)?;
+    fs_module.function_meta(functions_common::read_to_string)?;
+    fs_module.function_meta(functions_common::read_lines)?;
+    fs_module.function_meta(functions_common::read_words)?;
+    fs_module.function_meta(functions_common::read_resource_to_string)?;
+    fs_module.function_meta(functions_common::read_resource_lines)?;
+    fs_module.function_meta(functions_common::read_resource_words)?;
     let mut iter_module = Module::default();
     iter_module.ty::<split_lines_iter::SplitLinesIterator>()?;
     fs_module.function_meta(split_lines_iter::read_split_lines_iter)?;
