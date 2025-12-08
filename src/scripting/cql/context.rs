@@ -3,13 +3,12 @@ use super::cass_error::{CassError, CassErrorKind};
 use super::connect::ClusterInfo;
 use crate::config::{RetryInterval, ValidationStrategy};
 use crate::error::LatteError;
+use crate::scripting::retry_error::handle_retry_error;
 use crate::scripting::row_distribution::RowDistributionPreset;
 use crate::stats::session::SessionStats;
-use chrono::Utc;
 use itertools::enumerate;
 use once_cell::sync::Lazy;
 use rand::prelude::ThreadRng;
-use rand::random;
 use regex::Regex;
 use rune::alloc::vec::Vec as RuneAllocVec;
 use rune::alloc::String as RuneString;
@@ -26,7 +25,6 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
-use tracing::error;
 use try_lock::TryLock;
 
 static IS_SELECT_QUERY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*select\b").unwrap());
@@ -300,9 +298,9 @@ pub struct Context {
     session: Option<Arc<Session>>,
     page_size: u64,
     statements: HashMap<String, Arc<PreparedStatement>>,
-    stats: TryLock<SessionStats>,
+    pub stats: TryLock<SessionStats>,
     pub retry_number: u64,
-    retry_interval: RetryInterval,
+    pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
     pub partition_row_presets: HashMap<String, RowDistributionPreset>,
     #[rune(get, set, add_assign, copy)]
@@ -847,54 +845,5 @@ impl Context {
     pub fn reset(&self) {
         self.stats.try_lock().unwrap().reset();
         *self.start_time.try_lock().unwrap() = Instant::now();
-    }
-}
-
-pub fn get_exponential_retry_interval(
-    min_interval: Duration,
-    max_interval: Duration,
-    current_attempt_num: u64,
-) -> Duration {
-    let min_interval_float: f64 = min_interval.as_secs_f64();
-    let mut current_interval: f64 =
-        min_interval_float * (2u64.pow(current_attempt_num.try_into().unwrap_or(0)) as f64);
-
-    // Add jitter
-    current_interval += random::<f64>() * min_interval_float;
-    current_interval -= min_interval_float / 2.0;
-
-    Duration::from_secs_f64(current_interval.min(max_interval.as_secs_f64()))
-}
-
-pub async fn handle_retry_error(
-    ctxt: &Context,
-    current_attempt_num: u64,
-    current_error: CassError,
-) {
-    let current_retry_interval = get_exponential_retry_interval(
-        ctxt.retry_interval.min,
-        ctxt.retry_interval.max,
-        current_attempt_num,
-    );
-
-    let mut next_attempt_str = String::new();
-    let is_last_attempt = current_attempt_num == ctxt.retry_number;
-    if !is_last_attempt {
-        next_attempt_str += &format!("[Retry in {} ms]", current_retry_interval.as_millis());
-    }
-    let err_msg = format!(
-        "{}: [ERROR][Attempt {}/{}]{} {}",
-        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-        current_attempt_num,
-        ctxt.retry_number,
-        next_attempt_str,
-        current_error,
-    );
-    error!("{}", err_msg);
-    if !is_last_attempt {
-        ctxt.stats.try_lock().unwrap().store_retry_error(err_msg);
-        tokio::time::sleep(current_retry_interval).await;
-    } else {
-        eprintln!("{err_msg}");
     }
 }

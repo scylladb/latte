@@ -2,6 +2,7 @@ use rune::{ContextError, Module};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
 
+pub mod retry_error;
 mod row_distribution;
 mod split_lines_iter;
 
