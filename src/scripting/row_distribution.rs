@@ -501,9 +501,19 @@ mod tests {
     //         });
     //      let mut ctxt: Context = Context::new(Some(session), ...);
 
+    #[cfg(feature = "cql")]
     fn create_test_context() -> Context {
         Context::new(
             None, 501, "foo-dc".to_string(), "foo-rack".to_string(), 0,
+            RetryInterval::new("1,2").expect("failed to parse retry interval"),
+            ValidationStrategy::Ignore,
+        )
+    }
+
+    #[cfg(feature = "alternator")]
+    fn create_test_context() -> Context {
+        Context::new(
+            None, 0,
             RetryInterval::new("1,2").expect("failed to parse retry interval"),
             ValidationStrategy::Ignore,
         )
