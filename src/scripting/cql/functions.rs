@@ -10,7 +10,7 @@ use rand::{Rng, SeedableRng};
 use rune::macros::{quote, MacroContext, TokenStream};
 use rune::parse::Parser;
 use rune::runtime::{Function, Mut, Ref, VmError, VmResult};
-use rune::{ast, vm_try, Any, Value};
+use rune::{ast, vm_try, Value};
 use statrs::distribution::{Normal, Uniform};
 use std::collections::HashMap;
 use std::fs::File;
@@ -476,51 +476,6 @@ pub async fn batch_prepared(
 ) -> Result<(), CassError> {
     ctx.batch_prepared(keys.iter().map(|k| k.deref()).collect(), params)
         .await
-}
-
-#[rune::function(instance)]
-pub async fn init_partition_row_distribution_preset(
-    mut ctx: Mut<Context>,
-    preset_name: Ref<str>,
-    row_count: u64,
-    rows_per_partitions_base: u64,
-    rows_per_partitions_groups: Ref<str>,
-) -> Result<(), CassError> {
-    ctx.init_partition_row_distribution_preset(
-        &preset_name,
-        row_count,
-        rows_per_partitions_base,
-        &rows_per_partitions_groups,
-    )
-    .await
-}
-
-/// This 'Partition' data type is exposed to rune scripts
-#[derive(Any)]
-pub struct Partition {
-    #[rune(get, set, copy, add_assign, sub_assign)]
-    idx: u64,
-
-    #[rune(get, copy)]
-    rows_num: u64,
-}
-
-#[rune::function(instance)]
-pub async fn get_partition_info(ctx: Ref<Context>, preset_name: Ref<str>, idx: u64) -> Partition {
-    let (idx, rows_num) = ctx
-        .get_partition_info(&preset_name, idx)
-        .await
-        .expect("failed to get partition");
-    Partition { idx, rows_num }
-}
-
-#[rune::function(instance)]
-pub async fn get_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>, idx: u64) -> u64 {
-    let (idx, _rows_num) = ctx
-        .get_partition_info(&preset_name, idx)
-        .await
-        .expect("failed to get partition");
-    idx
 }
 
 #[rune::function(instance)]

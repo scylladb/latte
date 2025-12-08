@@ -14,6 +14,10 @@ use std::fmt::{Display, Formatter};
 pub struct CassError(pub CassErrorKind);
 
 impl CassError {
+    pub fn new(kind: CassErrorKind) -> CassError {
+        CassError(kind)
+    }
+
     pub fn prepare_error(cql: &str, err: PrepareError) -> CassError {
         CassError(CassErrorKind::Prepare(cql.to_string(), err))
     }
