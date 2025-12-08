@@ -29,7 +29,7 @@ use crate::config::{
 use crate::error::{LatteError, Result};
 use crate::exec::{par_execute, ExecutionOptions};
 use crate::report::{PathAndSummary, Report, RunConfigCmp};
-use crate::scripting::connect::ClusterInfo;
+use crate::scripting::cluster_info::ClusterInfo;
 use crate::scripting::context::Context;
 use crate::stats::histogram::HistogramWriter;
 use crate::stats::{BenchmarkCmp, BenchmarkStats, Recorder};

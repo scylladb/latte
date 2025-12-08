@@ -1,8 +1,8 @@
 use super::bind::to_scylla_query_params;
 use super::cass_error::{CassError, CassErrorKind};
-use super::connect::ClusterInfo;
 use crate::config::{RetryInterval, ValidationStrategy};
 use crate::error::LatteError;
+use crate::scripting::cluster_info::ClusterInfo;
 use crate::scripting::retry_error::handle_retry_error;
 use crate::scripting::row_distribution::RowDistributionPreset;
 use crate::stats::session::SessionStats;

@@ -76,8 +76,3 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         conf.validation_strategy,
     ))
 }
-
-pub struct ClusterInfo {
-    pub name: String,
-    pub db_version: String,
-}
