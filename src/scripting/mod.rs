@@ -2,6 +2,8 @@ use rune::{ContextError, Module};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
 
+mod row_distribution;
+
 #[cfg(feature = "cql")]
 mod cql;
 
@@ -46,10 +48,10 @@ fn try_install(
     context_module.function_meta(functions::execute_prepared_with_result)?;
 
     context_module.function_meta(functions::batch_prepared)?;
-    context_module.function_meta(functions::init_partition_row_distribution_preset)?;
-    context_module.function_meta(functions::get_partition_idx)?;
-    context_module.ty::<functions::Partition>()?;
-    context_module.function_meta(functions::get_partition_info)?;
+    context_module.function_meta(row_distribution::init_partition_row_distribution_preset)?;
+    context_module.function_meta(row_distribution::get_partition_idx)?;
+    context_module.ty::<row_distribution::Partition>()?;
+    context_module.function_meta(row_distribution::get_partition_info)?;
     context_module.function_meta(functions::get_datacenters)?;
     context_module.function_meta(functions::elapsed_secs)?;
 
