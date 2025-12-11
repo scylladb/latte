@@ -408,7 +408,7 @@ If there is a need to simulate real-life case where we have multi-row partitions
 and their sizes differ we can easily cover it with latte.
 
 First step is to define following function in the `prepare` section of a rune script:
-```
+```rust
   pub async fn prepare(db) {
     ...
     db.init_partition_row_distribution_preset(
@@ -424,7 +424,7 @@ and instruct it to calculate number of partitions and their rows-sizes like foll
 - `10%` of the `3.5*ROWS_PER_PARTITION`.
 
 Then, in the target functions we can reuse it like following:
-```
+```rust
   pub async fn insert(db, i) {
     let idx = i % ROW_COUNT + OFFSET;
     let partition_idx = db.get_partition_idx("foo", idx).await + OFFSET;
@@ -453,7 +453,7 @@ Both support following combinations:
 - [Integer, Integer, String] -> Range of expected rows and custom error message.
 
 Example using three validation elements:
-```
+```rust
   pub async fn some_select_rune_function(db, i) {
     ...
     let elapsed = db.elapsed_secs();
@@ -469,7 +469,7 @@ Example using three validation elements:
 ```
 
 Example using just one validation element (expected strict number of rows):
-```
+```rust
   pub async fn prepare(db) {
     db.init_partition_row_distribution_preset(
       "main", ROW_COUNT, ROWS_PER_PARTITION, PARTITION_SIZES).await?;
