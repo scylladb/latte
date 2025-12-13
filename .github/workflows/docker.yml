@@ -65,7 +65,7 @@ jobs:
           echo $CURRENT_SHA > digest-${{ matrix.build.arch_short }}
 
       - name: Upload Digest Artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: digest-${{ matrix.build.arch_short }}
           path: digest-${{ matrix.build.arch_short }}
@@ -93,7 +93,7 @@ jobs:
         run: echo "DOCKER_BUILDKIT=1" >> $GITHUB_ENV
 
       - name: Download Digests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: digests
 
