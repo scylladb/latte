@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use chrono::Utc;
+#[cfg(feature = "cql")]
 use clap::builder::PossibleValue;
 use clap::{Parser, ValueEnum};
 use itertools::Itertools;
@@ -197,10 +198,12 @@ pub struct ConnectionConf {
     /// CQL query consistency level.
     /// 'SERIAL' and 'LOCAL_SERIAL' values are compatible only with SELECT statements
     /// and make Scylla use Paxos consensus algorithm
+    #[cfg(feature = "cql")]
     #[clap(long("consistency"), required = false, default_value = "LOCAL_QUORUM")]
     pub consistency: Consistency,
 
     /// Serial consistency level for conditional (LWT) queries
+    #[cfg(feature = "cql")]
     #[clap(
         long("serial-consistency"),
         required = false,
@@ -258,6 +261,7 @@ pub enum ValidationStrategy {
     Ignore, // Ignore validation errors - face, print, go on.
 }
 
+#[cfg(feature = "cql")]
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Consistency {
     Any,
@@ -276,6 +280,7 @@ pub enum Consistency {
     LocalSerial,
 }
 
+#[cfg(feature = "cql")]
 impl Consistency {
     pub fn consistency(&self) -> scylla::frame::types::Consistency {
         match self {
@@ -294,6 +299,7 @@ impl Consistency {
     }
 }
 
+#[cfg(feature = "cql")]
 impl ValueEnum for Consistency {
     fn value_variants<'a>() -> &'a [Self] {
         &[
@@ -345,6 +351,7 @@ impl ValueEnum for Consistency {
     }
 }
 
+#[cfg(feature = "cql")]
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SerialConsistency {
     Serial,
@@ -352,6 +359,7 @@ pub enum SerialConsistency {
     LocalSerial,
 }
 
+#[cfg(feature = "cql")]
 impl SerialConsistency {
     pub fn serial_consistency(&self) -> scylla::frame::types::SerialConsistency {
         match self {
@@ -361,6 +369,7 @@ impl SerialConsistency {
     }
 }
 
+#[cfg(feature = "cql")]
 impl ValueEnum for SerialConsistency {
     fn value_variants<'a>() -> &'a [Self] {
         &[Self::Serial, Self::LocalSerial]
