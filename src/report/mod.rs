@@ -505,9 +505,11 @@ impl Display for RunConfigCmp<'_> {
                     .map(WeightedFunction::to_string)
                     .join(", ")
             }),
+            #[cfg(feature = "cql")]
             self.line("Consistency", "", |conf| {
                 conf.connection.consistency.consistency().to_string()
             }),
+            #[cfg(feature = "cql")]
             self.line("Serial consistency", "", |conf| {
                 conf.connection
                     .serial_consistency
