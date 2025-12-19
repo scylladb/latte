@@ -1,6 +1,6 @@
+use super::cass_error::{CassError, CassErrorKind};
+use super::context::Context;
 use crate::config::ConnectionConf;
-use crate::scripting::cass_error::{CassError, CassErrorKind};
-use crate::scripting::context::Context;
 use openssl::ssl::{SslContextBuilder, SslFiletype, SslMethod, SslVerifyMode};
 use scylla::client::session::TlsContext;
 use scylla::client::PoolSize;
@@ -75,9 +75,4 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         conf.retry_interval,
         conf.validation_strategy,
     ))
-}
-
-pub struct ClusterInfo {
-    pub name: String,
-    pub db_version: String,
 }
