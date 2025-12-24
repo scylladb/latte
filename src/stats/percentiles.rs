@@ -139,9 +139,24 @@ fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -
     for bucket in histogram.iter_recorded() {
         let p = bucket.count_at_value() as f64 / n as f64;
         assert!(p > 0.0, "Probability must be greater than 0.0");
-        let b = rand_distr::Binomial::new(effective_n, p).unwrap();
-        let count: u64 = rng.sample(b);
-        result.record_n(bucket.value_iterated_to(), count).unwrap()
+        // NOTE: 'rand' lib panics if n > i32::MAX, so, use chunks smaller than that value
+        //       see https://github.com/scylladb/latte/issues/115
+        let mut total_count: u64 = 0;
+        let mut remaining_n = effective_n;
+        const CHUNK_SIZE: u64 = 2_000_000_000;
+        while remaining_n > 0 {
+            let current_chunk = if remaining_n > CHUNK_SIZE {
+                CHUNK_SIZE
+            } else {
+                remaining_n
+            };
+            let b_chunk = rand_distr::Binomial::new(current_chunk, p).unwrap();
+            total_count += rng.sample(b_chunk);
+            remaining_n -= current_chunk;
+        }
+        result
+            .record_n(bucket.value_iterated_to(), total_count)
+            .unwrap()
     }
     result
 }
@@ -191,5 +206,37 @@ mod test {
         let max = percentiles.get(Percentile::Max);
         assert!(min.std_err.unwrap() < max.value / N as f64);
         assert!(max.std_err.unwrap() < max.value / N as f64);
+    }
+
+    #[test]
+    fn test_bootstrap() {
+        use super::bootstrap;
+        use hdrhistogram::Histogram;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        // Record many items to make total count (n) large
+        hist.record_n(100, 10_000_000_000).unwrap();
+        // Record one item to have a bucket with small probability
+        hist.record(200).unwrap();
+
+        let boundary_values = [
+            1_999_999_999,  // CHUNK_SIZE - 1
+            2_000_000_000,  // CHUNK_SIZE
+            2_000_000_001,  // CHUNK_SIZE + 1
+            2_147_483_646,  // i32::MAX - 1
+            2_147_483_647,  // i32::MAX
+            2_147_483_648,  // i32::MAX + 1
+            4_294_967_295,  // u32::MAX - 1
+            4_294_967_296,  // u32::MAX
+            4_294_967_297,  // u32::MAX + 1
+            10_000_000_000, // 2^32 < n
+        ];
+
+        for &effective_n in &boundary_values {
+            let mut rng = SmallRng::seed_from_u64(42);
+            let _res = bootstrap(&mut rng, &hist, effective_n);
+        }
     }
 }
