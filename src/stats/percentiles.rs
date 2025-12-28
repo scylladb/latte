@@ -92,7 +92,7 @@ impl Percentiles {
     /// Computes distribution percentiles with errors based on a HDR histogram.
     /// Caution: this is slow. Don't use it when benchmark is running!
     /// Errors are estimated by bootstrapping a larger population of histograms from the
-    /// distribution determined by the original histogram and computing the standard error.   
+    /// distribution determined by the original histogram and computing the standard error.
     pub fn compute_with_errors(
         histogram: &Histogram<u64>,
         scale: f64,
@@ -127,6 +127,14 @@ impl Percentiles {
     }
 }
 
+/// Maximum chunk size used when bootstrapping histograms.
+///
+/// The `rand` crate internally uses `i32` for some operations and will panic if asked
+/// to generate more than `i32::MAX` samples at once. We therefore cap each bootstrap
+/// chunk to a value safely below `i32::MAX` and split larger effective sample sizes
+/// into multiple chunks of at most this size.
+const MAX_BOOTSTRAP_CHUNK_SIZE: u64 = 2_000_000_000;
+
 /// Creates a new random histogram using another histogram as the distribution.
 fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -> Histogram<u64> {
     let n = histogram.len();
@@ -138,20 +146,25 @@ fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -
 
     for bucket in histogram.iter_recorded() {
         let p = bucket.count_at_value() as f64 / n as f64;
-        assert!(p > 0.0, "Probability must be greater than 0.0");
+        assert!(p >= 0.0, "Probability must be non-negative");
         // NOTE: 'rand' lib panics if n > i32::MAX, so, use chunks smaller than that value
         //       see https://github.com/scylladb/latte/issues/115
         let mut total_count: u64 = 0;
         let mut remaining_n = effective_n;
-        const CHUNK_SIZE: u64 = 2_000_000_000;
         while remaining_n > 0 {
-            let current_chunk = if remaining_n > CHUNK_SIZE {
-                CHUNK_SIZE
+            let current_chunk = if remaining_n > MAX_BOOTSTRAP_CHUNK_SIZE {
+                MAX_BOOTSTRAP_CHUNK_SIZE
             } else {
                 remaining_n
             };
-            let b_chunk = rand_distr::Binomial::new(current_chunk, p).unwrap();
-            total_count += rng.sample(b_chunk);
+            if current_chunk == 0 {
+                break;
+            }
+            // Clamp p to [0.0, 1.0] to avoid construction errors due to rounding.
+            let p_clamped = p.clamp(0.0, 1.0);
+            if let Ok(b_chunk) = rand_distr::Binomial::new(current_chunk, p_clamped) {
+                total_count += rng.sample(b_chunk);
+            }
             remaining_n -= current_chunk;
         }
         result
