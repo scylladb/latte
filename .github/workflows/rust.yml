@@ -21,6 +21,7 @@ jobs:
         with:
           cache: true
       - run: cargo check --all --all-targets
+      - run: cargo check --all --all-targets --no-default-features --features alternator
 
   test:
     name: Test
@@ -35,6 +36,7 @@ jobs:
         with:
           crate: cargo-nextest
       - run: cargo nextest run
+      - run: cargo nextest run --no-default-features --features alternator
 
   fmt:
     name: Format
@@ -59,3 +61,4 @@ jobs:
           cache: true
       - run: cargo clippy -- -D warnings
       - run: RUSTFLAGS="--cfg fetch_extended_version_info" cargo clippy -- -D warnings
+      - run: cargo clippy --no-default-features --features alternator -- -D warnings
