@@ -13,8 +13,10 @@ pub async fn schema(db) {
 }
 
 pub async fn run(db, i) {
+    let pk = "item_" + i.to_string();
+    
     let item = #{
-        pk: "item_" + i.to_string(),
+        pk: pk,
         
         // Boolean "AttributeValue::Bool"
         bool_true: true,
@@ -56,4 +58,49 @@ pub async fn run(db, i) {
     };
 
     db.put(TABLE, item).await?;
+    
+    // Retrieve the item and validate types
+    let result = db.get(TABLE, #{ pk: pk }, #{
+        with_result: true
+    }).await?.unwrap();
+
+    // The same can be achieved using query
+    // let result = db.query(TABLE, #{
+    //     query: "pk = :pk",
+    //     "attribute_values": #{
+    //         ":pk": pk
+    //     },
+    //     with_result: true
+    // }).await?[0];
+
+    assert!(result["bool_true"] == true);
+    assert!(result["bool_false"] == false);
+
+    assert!(result["integer"] == 42);
+    assert!(result["float"] is f64);
+    
+    assert!(result["test_string"] == "Hello, World!");
+
+    assert!(result["test_bytes"] ==  b"binary data");
+
+    assert!(result["test_list"] == [
+        1, 
+        "two", 
+        3.0, 
+        true, 
+        [1, 2], 
+        #{ key: "value" }
+    ]);
+    assert!(result["test_empty_list"] == []);
+
+    assert!(result["test_map"] == #{
+        nested_string: "nested",
+        nested_int: 100,
+        deep_nesting: #{
+            level: 2
+        }
+    });
+    
+    assert!(result["test_option_some"] == 42);
+    assert!(result["test_option_none"] == None);
 }

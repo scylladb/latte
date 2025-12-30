@@ -1,6 +1,6 @@
 use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 use rune::alloc::fmt::TryWrite;
-use rune::runtime::VmResult;
+use rune::runtime::{VmError, VmResult};
 use rune::{vm_write, Any};
 use std::fmt::{Debug, Display, Formatter};
 
@@ -88,6 +88,18 @@ where
         AlternatorError::new(AlternatorErrorKind::SdkError(
             err.message().unwrap_or("No message").to_string(),
         ))
+    }
+}
+
+impl From<VmError> for AlternatorError {
+    fn from(error: VmError) -> Self {
+        AlternatorError::new(AlternatorErrorKind::ConversionError(error.to_string()))
+    }
+}
+
+impl From<rune::alloc::Error> for AlternatorError {
+    fn from(error: rune::alloc::Error) -> Self {
+        AlternatorError::new(AlternatorErrorKind::ConversionError(error.to_string()))
     }
 }
 
