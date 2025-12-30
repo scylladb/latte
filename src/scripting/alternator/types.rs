@@ -1,7 +1,7 @@
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use aws_sdk_dynamodb::types::AttributeValue;
-use rune::runtime::{Object, Ref};
-use rune::Value;
+use rune::runtime::{Bytes, Object, Ref};
+use rune::{ToValue, Value};
 use std::collections::HashMap;
 
 pub fn rune_value_to_alternator_attribute(v: Value) -> Result<AttributeValue, AlternatorError> {
@@ -50,4 +50,53 @@ pub fn rune_object_to_alternator_map(
             ))
         })
         .collect()
+}
+
+pub fn alternator_attribute_to_rune_value(attr: AttributeValue) -> Result<Value, AlternatorError> {
+    match attr {
+        AttributeValue::Bool(b) => Ok(Value::Bool(b)),
+
+        AttributeValue::N(n) => {
+            // Try parsing as integer first, then as float
+            if let Ok(i) = n.parse::<i64>() {
+                Ok(Value::Integer(i))
+            } else if let Ok(f) = n.parse::<f64>() {
+                Ok(Value::Float(f))
+            } else {
+                Err(AlternatorError::new(AlternatorErrorKind::ConversionError(
+                    format!("Invalid number format: {}", n),
+                )))
+            }
+        }
+
+        AttributeValue::S(s) => Ok(s.as_str().to_value().into_result()?),
+
+        AttributeValue::B(b) => Ok(Bytes::try_from(b.into_inner())?.to_value().into_result()?),
+
+        AttributeValue::L(l) => Ok(l
+            .into_iter()
+            .map(alternator_attribute_to_rune_value)
+            .collect::<Result<Vec<Value>, _>>()?
+            .to_value()
+            .into_result()?),
+
+        AttributeValue::M(map) => Ok(alternator_map_to_rune_object(map)?),
+
+        AttributeValue::Null(_) => Ok(None::<bool>.to_value().into_result()?),
+
+        _ => Err(AlternatorError::new(AlternatorErrorKind::ConversionError(
+            format!("Unsupported Alternator AttributeValue type: {:?}", attr),
+        ))),
+    }
+}
+
+pub fn alternator_map_to_rune_object(
+    map: HashMap<String, AttributeValue>,
+) -> Result<Value, AlternatorError> {
+    Ok(map
+        .into_iter()
+        .map(|(k, v)| Ok((k, alternator_attribute_to_rune_value(v)?)))
+        .collect::<Result<HashMap<String, Value>, AlternatorError>>()?
+        .to_value()
+        .into_result()?)
 }
