@@ -64,6 +64,15 @@ pub async fn run(db, i) {
         consistent_read: true
     }).await?;
 
+    // QUERY with validation
+    db.query(TABLE, #{
+        query: "pk = :pk",
+        "attribute_values": #{
+            ":pk": user_id
+        },
+        validation: [1]
+    }).await?;
+
     // DELETE Item
     db.delete(TABLE, key).await?;
 }
