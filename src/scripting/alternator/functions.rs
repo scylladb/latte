@@ -1,3 +1,5 @@
+use crate::scripting::functions_common::extract_validation_args;
+
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
 use super::types::rune_object_to_alternator_map;
@@ -304,6 +306,7 @@ pub async fn update(
 ///   - `attribute_values`: A map of attribute value placeholders (starting with :) to values.
 ///   - `consistent_read`: Boolean to enable consistent read (default: false).
 ///   - `limit`: The maximum number of items to evaluate (optional).
+///   - `validation`: An optional item count validation. Look at [extract_validation_args] for details.
 #[rune::function(instance)]
 pub async fn query(
     ctx: Ref<Context>,
@@ -348,7 +351,29 @@ pub async fn query(
         });
     }
 
-    builder.send().await?;
+    let validation = if let Some(Value::Vec(validation)) = params.get("validation") {
+        Some(
+            extract_validation_args(validation.borrow_ref()?.to_vec())
+                .map_err(|s| AlternatorError::new(AlternatorErrorKind::BadInput(s)))?,
+        )
+    } else {
+        None
+    };
+
+    let output = builder.send().await?;
+
+    if let Some(validation) = validation {
+        let item_count = output.items().len() as u64;
+
+        if item_count < validation.expected_min || item_count > validation.expected_max {
+            return Err(AlternatorError::new(AlternatorErrorKind::ValidationError(
+                format!(
+                    "Query returned {item_count} items, expected between {} and {} {}",
+                    validation.expected_min, validation.expected_max, validation.custom_err_msg
+                ),
+            )));
+        }
+    }
 
     Ok(())
 }

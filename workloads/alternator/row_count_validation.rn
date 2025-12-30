@@ -1,0 +1,63 @@
+use latte::*;
+
+// Usage:
+// latte schema workloads/alternator/row_count_validation.rn http://172.17.0.2:8000
+// latte run workloads/alternator/row_count_validation.rn -d 1000 -f insert http://172.17.0.2:8000
+// latte run workloads/alternator/row_count_validation.rn -d 1000 -f query http://172.17.0.2:8000
+// latte run workloads/alternator/row_count_validation.rn -d 1000 -f query_many http://172.17.0.2:8000
+
+const ROW_COUNT = latte::param!("row_count", 1000);
+const ROWS_PER_PARTITION = latte::param!("rows_per_partition", 1);
+// NOTE: 'partition_sizes' defines set of 'percent:multiplier' pairs to create multi-row partitions
+// of different sizes. Example: '95:1,4:2,1:4'
+const PARTITION_SIZES = latte::param!("partition_sizes", "50:4,50:6");
+
+const TABLE = "row_count_validation_table";
+
+pub async fn schema(db) {
+    // Drop the table (ignoring errors if it doesn't exist) to ensure we always have the up-to-date schema.
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, #{primary_key: #{name: "pk", type: "N"}, sort_key: #{name: "ck", type: "N"}}).await?;
+}
+
+pub async fn prepare(db) {
+    db.init_partition_row_distribution_preset("main", ROW_COUNT, ROWS_PER_PARTITION, PARTITION_SIZES).await?;
+}
+
+pub async fn insert(db, i) {
+    let idx = i % ROW_COUNT;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+    let ck = hash(idx);
+    
+    db.put(TABLE, #{pk: pk, ck: ck}).await?;
+}
+
+pub async fn query(db, i) {
+    let idx = i % ROW_COUNT;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+
+    db.query(TABLE, #{
+        query: "pk = :pk",
+        "attribute_values": #{
+            ":pk": pk
+        },
+        limit: 1,
+        validation: [1, "custom error"]
+    }).await?;
+}
+
+pub async fn query_many(db, i) {
+    let idx = i % ROW_COUNT;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+
+    db.query(TABLE, #{
+        query: "pk = :pk",
+        attribute_values: #{
+            ":pk": pk
+        },
+        validation: [partition.rows_num, partition.rows_num]
+    }).await?;
+}
