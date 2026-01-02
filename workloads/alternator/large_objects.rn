@@ -1,0 +1,40 @@
+use latte::*;
+
+// Workload for Alternator that inserts large objects and performs GET operations.
+// Used to test the performance of `with_result`.
+//
+// Usage:
+// latte schema workloads/alternator/large_objects.rn http://172.17.0.2:8000
+// latte run workloads/alternator/large_objects.rn -f insert -d 1000 http://172.17.0.2:8000
+// latte run workloads/alternator/large_objects.rn http://172.17.0.2:8000
+// latte run workloads/alternator/large_objects.rn http://172.17.0.2:8000 -P with_result=true
+
+const TABLE = "large_objects_table";
+const ROW_COUNT = latte::param!("rows", 1000);
+const OBJECT_SIZE = latte::param!("size", 10240); // 10 KB by default
+const WITH_RESULT = latte::param!("with_result", false);
+
+pub async fn schema(db) {
+    // Drop the table (ignoring errors if it doesn't exist) to ensure we always have the up-to-date schema.
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "id").await?;
+}
+
+pub async fn insert(db, i) {
+    let id = i % ROW_COUNT;
+
+    db.put(TABLE, #{
+        id: id.to_string(),
+        data: latte::text(i, OBJECT_SIZE)
+    }).await?;
+}
+
+pub async fn run(db, i) {
+    let id = (latte::hash(i) % ROW_COUNT).to_string();
+    let key = #{ id: id };
+    if WITH_RESULT {
+        db.get(TABLE, key, #{ with_result: true }).await?;
+    } else {
+        db.get(TABLE, key, ()).await?;
+    }
+}
