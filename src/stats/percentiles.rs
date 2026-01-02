@@ -146,7 +146,7 @@ fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -
 
     for bucket in histogram.iter_recorded() {
         let p = bucket.count_at_value() as f64 / n as f64;
-        assert!(p >= 0.0, "Probability must be non-negative");
+        assert!(p > 0.0, "Probability must be greater than 0.0");
         // NOTE: 'rand' lib panics if n > i32::MAX, so, use chunks smaller than that value
         //       see https://github.com/scylladb/latte/issues/115
         let mut total_count: u64 = 0;
@@ -157,14 +157,8 @@ fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -
             } else {
                 remaining_n
             };
-            if current_chunk == 0 {
-                break;
-            }
-            // Clamp p to [0.0, 1.0] to avoid construction errors due to rounding.
-            let p_clamped = p.clamp(0.0, 1.0);
-            if let Ok(b_chunk) = rand_distr::Binomial::new(current_chunk, p_clamped) {
-                total_count += rng.sample(b_chunk);
-            }
+            let b_chunk = rand_distr::Binomial::new(current_chunk, p).unwrap();
+            total_count += rng.sample(b_chunk);
             remaining_n -= current_chunk;
         }
         result
