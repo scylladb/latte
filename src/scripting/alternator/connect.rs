@@ -7,9 +7,11 @@ use aws_sdk_dynamodb::error::DisplayErrorContext;
 use aws_sdk_dynamodb::Client;
 
 pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> {
+    let address = conf.addresses.first().cloned().unwrap_or_default();
+
     // TODO: use latte parameters for setting the configuration
     let config = aws_config::defaults(BehaviorVersion::latest())
-        .endpoint_url(conf.addresses[0].clone())
+        .endpoint_url(&address)
         .region(Region::new("us-east-1"))
         .credentials_provider(Credentials::new("", "", None, None, ""))
         .load()
@@ -19,9 +21,8 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> 
 
     // Validate connection by making a test request
     client.list_tables().limit(1).send().await.map_err(|e| {
-        let addr = conf.addresses.get(0).cloned().unwrap_or_default();
         AlternatorError(AlternatorErrorKind::FailedToConnect(
-            addr,
+            address,
             DisplayErrorContext(&e).to_string(),
         ))
     })?;
