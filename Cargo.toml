@@ -6,10 +6,17 @@ authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 edition = "2021"
 readme = "README.md"
 license = "Apache-2.0"
+default-run = "latte"
 
 [[bin]]
 name = "latte"
 path = "src/main.rs"
+required-features = ["cql"]
+
+[[bin]]
+name = "latte-alternator"
+path = "src/main.rs"
+required-features = ["alternator"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
