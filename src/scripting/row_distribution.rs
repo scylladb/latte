@@ -516,6 +516,7 @@ mod tests {
             None, 0,
             RetryInterval::new("1,2").expect("failed to parse retry interval"),
             ValidationStrategy::Ignore,
+            0,
         )
     }
 

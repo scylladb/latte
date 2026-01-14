@@ -14,6 +14,7 @@ use try_lock::TryLock;
 #[derive(Any)]
 pub struct Context {
     client: Option<Client>,
+    page_size: u64,
     pub stats: TryLock<SessionStats>,
     pub start_time: TryLock<Instant>,
     pub retry_number: u64,
@@ -35,9 +36,11 @@ impl Context {
         retry_number: u64,
         retry_interval: RetryInterval,
         validation_strategy: ValidationStrategy,
+        page_size: u64,
     ) -> Context {
         Context {
             client,
+            page_size,
             stats: TryLock::new(SessionStats::new()),
             start_time: TryLock::new(Instant::now()),
             retry_number,
@@ -54,6 +57,7 @@ impl Context {
         let deserialized: Value = rmp_serde::from_slice(&serialized)?;
         Ok(Context {
             client: self.client.clone(),
+            page_size: self.page_size,
             stats: TryLock::new(SessionStats::default()),
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             retry_number: self.retry_number,
@@ -90,5 +94,9 @@ impl Context {
             .ok_or(AlternatorError::new(AlternatorErrorKind::Error(
                 "DynamoDB client is not initialized".to_string(),
             )))
+    }
+
+    pub fn get_page_size(&self) -> u64 {
+        self.page_size
     }
 }

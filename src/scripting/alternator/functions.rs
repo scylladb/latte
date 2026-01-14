@@ -1,16 +1,21 @@
+use crate::scripting::alternator::traits::{AlternatorRequest, IntoAlternatorOutput};
 use crate::scripting::functions_common::extract_validation_args;
+use crate::scripting::retry_error::handle_retry_error;
 
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
-use super::types::{alternator_map_to_rune_object, rune_object_to_alternator_map};
+use super::types::rune_object_to_alternator_map;
 use aws_sdk_dynamodb::client::Waiters;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, KeySchemaElement, KeyType, ScalarAttributeType,
 };
 use rune::runtime::{Object, Ref, Shared};
 use rune::{ToValue, Value};
+use std::cmp::min;
 use std::collections::HashMap;
 use std::ops::Deref;
+use std::time::Duration;
+use tokio::time::Instant;
 
 fn bad_input<T>(msg: impl Into<String>) -> Result<T, AlternatorError> {
     Err(AlternatorError::new(AlternatorErrorKind::BadInput(
@@ -65,6 +70,70 @@ fn extract_attribute_names(
         .collect::<Result<_, _>>()
 }
 
+async fn handle_request(
+    ctx: &Context,
+    builder: impl AlternatorRequest,
+) -> Result<Vec<Value>, AlternatorError> {
+    let mut token: Option<HashMap<String, aws_sdk_dynamodb::types::AttributeValue>> = None;
+    let mut current_attempt_num = 0;
+    let mut all_pages_duration = Duration::ZERO;
+    let mut all_items = Vec::new();
+    let mut total_item_count = 0;
+    let query_limit = builder.get_limit_val();
+
+    while current_attempt_num <= ctx.retry_number {
+        let mut current_builder = builder.clone();
+        if builder.has_pagination() {
+            let page_size = match query_limit {
+                Some(limit) => min(ctx.get_page_size() as i32, limit - total_item_count as i32),
+                None => ctx.get_page_size() as i32,
+            };
+            current_builder = current_builder.set_pagination(token.clone(), Some(page_size));
+        }
+
+        let start_time = ctx.stats.try_lock().unwrap().start_request();
+        let resp = current_builder.send().await;
+        let duration = Instant::now() - start_time;
+
+        match resp.into_output() {
+            Ok((page_items, item_count, next_token)) => {
+                all_pages_duration += duration;
+                all_items.extend(page_items);
+                total_item_count += item_count;
+                token = next_token;
+
+                if let Some(limit) = query_limit {
+                    if total_item_count as i32 >= limit {
+                        ctx.stats
+                            .try_lock()
+                            .unwrap()
+                            .complete_request(all_pages_duration, total_item_count);
+                        return Ok(all_items);
+                    }
+                }
+
+                if token.is_some() && builder.has_pagination() {
+                    current_attempt_num = 0; // reset retries for next page
+                    continue;
+                }
+
+                ctx.stats
+                    .try_lock()
+                    .unwrap()
+                    .complete_request(all_pages_duration, total_item_count);
+                return Ok(all_items);
+            }
+            Err(e) => {
+                let current_error = e;
+                handle_retry_error(ctx, current_attempt_num, current_error).await;
+                current_attempt_num += 1;
+                continue; // try again the same page
+            }
+        };
+    }
+    Err(AlternatorError::query_retries_exceeded(ctx.retry_number))
+}
+
 /// Creates a new table.
 ///
 /// # Arguments
@@ -102,7 +171,10 @@ pub async fn create_table(
         _ => None,
     };
 
-    let mut builder = client.create_table().table_name(table_name.deref());
+    let mut builder = client
+        .create_table()
+        .table_name(table_name.deref())
+        .billing_mode(aws_sdk_dynamodb::types::BillingMode::PayPerRequest);
 
     builder = builder.key_schema(
         KeySchemaElement::builder()
@@ -134,10 +206,7 @@ pub async fn create_table(
         );
     }
 
-    builder
-        .billing_mode(aws_sdk_dynamodb::types::BillingMode::PayPerRequest)
-        .send()
-        .await?;
+    builder.send().await?;
 
     client
         .wait_until_table_exists()
@@ -175,12 +244,12 @@ pub async fn put(
 ) -> Result<(), AlternatorError> {
     let client = ctx.get_client()?;
 
-    client
+    let builder = client
         .put_item()
         .table_name(table_name.deref())
-        .set_item(Some(rune_object_to_alternator_map(item)?))
-        .send()
-        .await?;
+        .set_item(Some(rune_object_to_alternator_map(item)?));
+
+    handle_request(&ctx, builder).await?;
 
     Ok(())
 }
@@ -199,12 +268,12 @@ pub async fn delete(
 ) -> Result<(), AlternatorError> {
     let client = ctx.get_client()?;
 
-    client
+    let builder = client
         .delete_item()
         .table_name(table_name.deref())
-        .set_key(Some(rune_object_to_alternator_map(key)?))
-        .send()
-        .await?;
+        .set_key(Some(rune_object_to_alternator_map(key)?));
+
+    handle_request(&ctx, builder).await?;
 
     Ok(())
 }
@@ -243,17 +312,12 @@ pub async fn get(
         }
     }
 
-    let output = builder.send().await?;
+    let result = handle_request(&ctx, builder).await?;
 
     if let Value::Object(opts) = &options {
         if let Some(Value::Bool(with_result)) = opts.borrow_ref()?.get("with_result") {
             if *with_result {
-                return Ok(output
-                    .item
-                    .map(alternator_map_to_rune_object)
-                    .transpose()?
-                    .to_value()
-                    .into_result()?);
+                return Ok(result.into_iter().next().to_value().into_result()?);
             }
         }
     }
@@ -300,7 +364,7 @@ pub async fn update(
         )?));
     }
 
-    builder.send().await?;
+    handle_request(&ctx, builder).await?;
 
     Ok(())
 }
@@ -378,11 +442,10 @@ pub async fn query(
         None
     };
 
-    let output = builder.send().await?;
+    let result = handle_request(&ctx, builder).await?;
+    let item_count = result.len() as u64;
 
     if let Some(validation) = validation {
-        let item_count = output.items().len() as u64;
-
         if item_count < validation.expected_min || item_count > validation.expected_max {
             return Err(AlternatorError::new(AlternatorErrorKind::ValidationError(
                 format!(
@@ -395,14 +458,7 @@ pub async fn query(
 
     if let Some(Value::Bool(with_result)) = params.get("with_result") {
         if *with_result {
-            return Ok(output
-                .items
-                .unwrap_or_default()
-                .into_iter()
-                .map(alternator_map_to_rune_object)
-                .collect::<Result<Vec<_>, _>>()?
-                .to_value()
-                .into_result()?);
+            return Ok(result.to_value().into_result()?);
         }
     }
 

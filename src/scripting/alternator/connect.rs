@@ -1,6 +1,7 @@
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
 use crate::config::ConnectionConf;
+use aws_config::retry::RetryConfig;
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::config::{Credentials, Region};
 use aws_sdk_dynamodb::error::DisplayErrorContext;
@@ -14,6 +15,7 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> 
         .endpoint_url(&address)
         .region(Region::new("us-east-1"))
         .credentials_provider(Credentials::new("", "", None, None, ""))
+        .retry_config(RetryConfig::standard().with_max_attempts(1))
         .load()
         .await;
 
@@ -32,5 +34,6 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> 
         conf.retry_number,
         conf.retry_interval,
         conf.validation_strategy,
+        conf.page_size.get() as u64,
     ))
 }
