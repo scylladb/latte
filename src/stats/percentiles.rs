@@ -92,7 +92,7 @@ impl Percentiles {
     /// Computes distribution percentiles with errors based on a HDR histogram.
     /// Caution: this is slow. Don't use it when benchmark is running!
     /// Errors are estimated by bootstrapping a larger population of histograms from the
-    /// distribution determined by the original histogram and computing the standard error.   
+    /// distribution determined by the original histogram and computing the standard error.
     pub fn compute_with_errors(
         histogram: &Histogram<u64>,
         scale: f64,
@@ -127,6 +127,14 @@ impl Percentiles {
     }
 }
 
+/// Maximum chunk size used when bootstrapping histograms.
+///
+/// The `rand` crate internally uses `i32` for some operations and will panic if asked
+/// to generate more than `i32::MAX` samples at once. We therefore cap each bootstrap
+/// chunk to a value safely below `i32::MAX` and split larger effective sample sizes
+/// into multiple chunks of at most this size.
+const MAX_BOOTSTRAP_CHUNK_SIZE: u64 = 2_000_000_000;
+
 /// Creates a new random histogram using another histogram as the distribution.
 fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -> Histogram<u64> {
     let n = histogram.len();
@@ -143,10 +151,9 @@ fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -
         //       see https://github.com/scylladb/latte/issues/115
         let mut total_count: u64 = 0;
         let mut remaining_n = effective_n;
-        const CHUNK_SIZE: u64 = 2_000_000_000;
         while remaining_n > 0 {
-            let current_chunk = if remaining_n > CHUNK_SIZE {
-                CHUNK_SIZE
+            let current_chunk = if remaining_n > MAX_BOOTSTRAP_CHUNK_SIZE {
+                MAX_BOOTSTRAP_CHUNK_SIZE
             } else {
                 remaining_n
             };
