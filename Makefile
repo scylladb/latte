@@ -29,3 +29,19 @@ clean:
 .PHONY: docker-build
 docker-build:
 	docker build --target production -t scylladb/latte:latest --compress .
+
+.PHONY: check-alternator
+check-alternator:
+	cargo check --all-targets --no-default-features --features alternator
+
+.PHONY: clippy-alternator
+clippy-alternator:
+	RUSTFLAGS=-Dwarnings cargo clippy --all-targets --no-default-features --features alternator
+
+.PHONY: test-alternator
+test-alternator:
+	cargo test --no-default-features --features alternator
+
+.PHONY: build-alternator
+build-alternator:
+	cargo build --examples --benches --no-default-features --features alternator
