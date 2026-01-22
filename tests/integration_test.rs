@@ -2,6 +2,9 @@ use std::process::Command;
 use std::time::Duration;
 use testcontainers::{core::WaitFor, runners::SyncRunner, GenericImage};
 
+/// Additional time to wait for ScyllaDB to be fully ready after container start
+const SCYLLA_READY_WAIT_SECS: u64 = 10;
+
 #[test]
 fn test_latte_with_scylladb() {
     // Start ScyllaDB container
@@ -15,19 +18,11 @@ fn test_latte_with_scylladb() {
         .get_host_port_ipv4(9042)
         .expect("Failed to get ScyllaDB port");
 
-    // Give ScyllaDB a bit more time to be fully ready
-    std::thread::sleep(Duration::from_secs(10));
-
-    // Build latte if not already built
-    let build_status = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
-        .expect("Failed to build latte");
-
-    assert!(build_status.success(), "Failed to build latte");
+    // Give ScyllaDB additional time to be fully ready
+    std::thread::sleep(Duration::from_secs(SCYLLA_READY_WAIT_SECS));
 
     // Run latte with the write workload for 1 minute
+    // Note: The binary should be pre-built by the test runner (e.g., in CI or via `cargo build --release`)
     let latte_binary = format!("{}/target/release/latte", env!("CARGO_MANIFEST_DIR"));
     let workload_path = format!("{}/workloads/basic/write.rn", env!("CARGO_MANIFEST_DIR"));
     let hosts = format!("127.0.0.1:{}", port);
