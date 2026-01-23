@@ -1,32 +1,36 @@
 use std::process::Command;
 use std::time::Duration;
-use testcontainers::{runners::SyncRunner, GenericImage};
+use testcontainers::{core::WaitFor, runners::SyncRunner, GenericImage};
 
 /// Additional time to wait for ScyllaDB to be fully ready after container start
-const SCYLLA_READY_WAIT_SECS: u64 = 20;
+const SCYLLA_READY_WAIT_SECS: u64 = 10;
 
+/// Integration test with ScyllaDB
+/// This test is ignored by default and should be run explicitly with:
+/// `cargo test --test integration_test -- --ignored`
 #[test]
+#[ignore]
 fn test_latte_with_scylladb() {
-    // Get ScyllaDB version from environment variable, default to "latest"
-    let scylla_version = std::env::var("SCYLLA_VERSION").unwrap_or_else(|_| "latest".to_string());
-
-    // Start ScyllaDB container
-    // Use a simple wait strategy without relying on specific log messages
-    // which may vary between ScyllaDB versions
-    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version);
+    // Get ScyllaDB version from environment variable, default to "2025.1.0" (stable version)
+    let scylla_version = std::env::var("SCYLLA_VERSION").unwrap_or_else(|_| "2025.1.0".to_string());
 
     println!(
         "Starting ScyllaDB container with version: {}",
         scylla_version
     );
 
-    let container = scylla_image
+    // Start ScyllaDB container using GenericImage with proper wait condition
+    // Based on the official testcontainers-modules ScyllaDB implementation
+    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version)
+        .with_wait_for(WaitFor::message_on_stderr("init - serving"));
+
+    let scylla_container = scylla_image
         .start()
         .expect("Failed to start ScyllaDB container");
 
     println!("ScyllaDB container started successfully");
 
-    let port = container
+    let port = scylla_container
         .get_host_port_ipv4(9042)
         .expect("Failed to get ScyllaDB port");
 

@@ -10,7 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SCYLLA_VERSION: latest
+  SCYLLA_VERSION: "2025.1.0"
 
 jobs:
   integration-test:
@@ -29,4 +29,4 @@ jobs:
       
       # Run integration test with ScyllaDB via testcontainers
       - name: Run integration test
-        run: cargo test --test integration_test -- --nocapture
+        run: cargo test --test integration_test -- --ignored --nocapture
