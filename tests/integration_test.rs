@@ -7,8 +7,11 @@ const SCYLLA_READY_WAIT_SECS: u64 = 10;
 
 #[test]
 fn test_latte_with_scylladb() {
+    // Get ScyllaDB version from environment variable, default to "latest"
+    let scylla_version = std::env::var("SCYLLA_VERSION").unwrap_or_else(|_| "latest".to_string());
+
     // Start ScyllaDB container
-    let scylla_image = GenericImage::new("scylladb/scylla", "6.2")
+    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version)
         .with_wait_for(WaitFor::message_on_stdout("init - serving"));
 
     let container = scylla_image
