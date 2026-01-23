@@ -1,9 +1,9 @@
 use std::process::Command;
 use std::time::Duration;
-use testcontainers::{core::WaitFor, runners::SyncRunner, GenericImage};
+use testcontainers::{runners::SyncRunner, GenericImage};
 
 /// Additional time to wait for ScyllaDB to be fully ready after container start
-const SCYLLA_READY_WAIT_SECS: u64 = 10;
+const SCYLLA_READY_WAIT_SECS: u64 = 20;
 
 #[test]
 fn test_latte_with_scylladb() {
@@ -11,17 +11,32 @@ fn test_latte_with_scylladb() {
     let scylla_version = std::env::var("SCYLLA_VERSION").unwrap_or_else(|_| "latest".to_string());
 
     // Start ScyllaDB container
-    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version)
-        .with_wait_for(WaitFor::message_on_stdout("init - serving"));
+    // Use a simple wait strategy without relying on specific log messages
+    // which may vary between ScyllaDB versions
+    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version);
+
+    println!(
+        "Starting ScyllaDB container with version: {}",
+        scylla_version
+    );
 
     let container = scylla_image
         .start()
         .expect("Failed to start ScyllaDB container");
+
+    println!("ScyllaDB container started successfully");
+
     let port = container
         .get_host_port_ipv4(9042)
         .expect("Failed to get ScyllaDB port");
 
-    // Give ScyllaDB additional time to be fully ready
+    println!("ScyllaDB listening on port: {}", port);
+
+    // Give ScyllaDB time to be fully ready - ScyllaDB can take a while to initialize
+    println!(
+        "Waiting {} seconds for ScyllaDB to be fully ready...",
+        SCYLLA_READY_WAIT_SECS
+    );
     std::thread::sleep(Duration::from_secs(SCYLLA_READY_WAIT_SECS));
 
     // Run latte with the write workload for 1 minute
