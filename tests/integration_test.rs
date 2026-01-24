@@ -1,9 +1,9 @@
 use std::process::Command;
 use std::time::Duration;
-use testcontainers::{core::WaitFor, runners::SyncRunner, GenericImage};
+use testcontainers::{runners::SyncRunner, GenericImage};
 
 /// Additional time to wait for ScyllaDB to be fully ready after container start
-const SCYLLA_READY_WAIT_SECS: u64 = 10;
+const SCYLLA_READY_WAIT_SECS: u64 = 30;
 
 /// Integration test with ScyllaDB
 /// This test is ignored by default and should be run explicitly with:
@@ -19,10 +19,9 @@ fn test_latte_with_scylladb() {
         scylla_version
     );
 
-    // Start ScyllaDB container using GenericImage with proper wait condition
-    // Based on the official testcontainers-modules ScyllaDB implementation
-    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version)
-        .with_wait_for(WaitFor::message_on_stderr("init - serving"));
+    // Start ScyllaDB container using GenericImage
+    // Don't use wait conditions as they can be unreliable - instead rely on sleep time
+    let scylla_image = GenericImage::new("scylladb/scylla", &scylla_version);
 
     let scylla_container = scylla_image
         .start()
@@ -37,6 +36,7 @@ fn test_latte_with_scylladb() {
     println!("ScyllaDB listening on port: {}", port);
 
     // Give ScyllaDB time to be fully ready - ScyllaDB can take a while to initialize
+    // Using a longer wait time to ensure the database is fully ready
     println!(
         "Waiting {} seconds for ScyllaDB to be fully ready...",
         SCYLLA_READY_WAIT_SECS
