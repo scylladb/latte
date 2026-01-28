@@ -4,7 +4,7 @@ use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_dynamodb::operation::{
     create_table::CreateTableOutput, delete_item::DeleteItemOutput,
     delete_table::DeleteTableOutput, get_item::GetItemOutput, put_item::PutItemOutput,
-    query::QueryOutput, update_item::UpdateItemOutput,
+    query::QueryOutput, scan::ScanOutput, update_item::UpdateItemOutput,
 };
 use aws_sdk_dynamodb::types::AttributeValue;
 use rune::Value;
@@ -29,6 +29,18 @@ impl IntoAlternatorOutput for GetItemOutput {
 }
 
 impl IntoAlternatorOutput for QueryOutput {
+    fn into_output(self) -> AlternatorOutputResult {
+        let items = self.items.unwrap_or_default();
+        let mut result = Vec::with_capacity(items.len());
+        for item in items {
+            result.push(alternator_map_to_rune_object(item)?);
+        }
+        let len = result.len() as u64;
+        Ok((result, len, self.last_evaluated_key))
+    }
+}
+
+impl IntoAlternatorOutput for ScanOutput {
     fn into_output(self) -> AlternatorOutputResult {
         let items = self.items.unwrap_or_default();
         let mut result = Vec::with_capacity(items.len());
@@ -130,8 +142,29 @@ impl_alternator_request_no_pagination!(
 );
 
 impl_send_request!(aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder);
+impl_send_request!(aws_sdk_dynamodb::operation::scan::builders::ScanFluentBuilder);
 
 impl AlternatorRequest for aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder {
+    fn set_pagination(
+        self,
+        token: Option<HashMap<String, AttributeValue>>,
+        limit: Option<i32>,
+    ) -> Self {
+        let mut b = self.set_exclusive_start_key(token);
+        if let Some(limit) = limit {
+            b = b.limit(limit);
+        }
+        b
+    }
+    fn has_pagination(&self) -> bool {
+        true
+    }
+    fn get_limit_val(&self) -> Option<i32> {
+        *self.get_limit()
+    }
+}
+
+impl AlternatorRequest for aws_sdk_dynamodb::operation::scan::builders::ScanFluentBuilder {
     fn set_pagination(
         self,
         token: Option<HashMap<String, AttributeValue>>,

@@ -73,6 +73,14 @@ pub async fn run(db, i) {
         validation: [1]
     }).await?;
 
+    // SCAN
+    db.scan(TABLE, #{
+        filter: "age > :min_age",
+        "attribute_values": #{
+            ":min_age": 18
+        }
+    }).await?;
+
     // DELETE Item
     db.delete(TABLE, key).await?;
 }
