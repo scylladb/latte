@@ -464,3 +464,86 @@ pub async fn query(
 
     Ok(Value::EmptyTuple)
 }
+
+/// Scans items from the table.
+///
+/// If `with_result` is set to true, the scan result is returned as a `Vec<Object>`.
+/// Otherwise, the unit value is returned.
+///
+/// # Arguments
+/// * `table_name` - The name of the table.
+/// * `params` - Parameters for the scan operation. An object containing:
+///   - `filter`: The filter expression string (optional).
+///   - `attribute_names`: A map of attribute name placeholders (starting with #) to actual names.
+///   - `attribute_values`: A map of attribute value placeholders (starting with :) to values.
+///   - `consistent_read`: Boolean to enable consistent read (default: false).
+///   - `limit`: The maximum number of items to evaluate (optional).
+///   - `validation`: An optional item count validation. Look at [extract_validation_args] for details.
+///   - `with_result`: If true, the scan result is returned (default: false).
+#[rune::function(instance)]
+pub async fn scan(
+    ctx: Ref<Context>,
+    table_name: Ref<str>,
+    params: Ref<Object>,
+) -> Result<Value, AlternatorError> {
+    let client = ctx.get_client()?;
+
+    let mut builder = client.scan().table_name(table_name.deref());
+
+    if let Some(Value::String(filter_expression)) = params.get("filter") {
+        builder = builder.filter_expression(filter_expression.borrow_ref()?.to_string());
+    }
+
+    if let Some(Value::Object(attr_names)) = params.get("attribute_names") {
+        builder =
+            builder.set_expression_attribute_names(Some(extract_attribute_names(attr_names)?));
+    }
+
+    if let Some(Value::Object(attr_values)) = params.get("attribute_values") {
+        builder = builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(
+            attr_values.clone().into_ref()?,
+        )?));
+    }
+
+    if let Some(Value::Bool(consistent_read)) = params.get("consistent_read") {
+        builder = builder.consistent_read(*consistent_read);
+    }
+
+    if let Some(limit_val) = params.get("limit") {
+        builder = builder.limit(match limit_val {
+            Value::Integer(i) => *i as i32,
+            _ => return bad_input("limit must be an integer"),
+        });
+    }
+
+    let validation = if let Some(Value::Vec(validation)) = params.get("validation") {
+        Some(
+            extract_validation_args(validation.borrow_ref()?.to_vec())
+                .map_err(|s| AlternatorError::new(AlternatorErrorKind::BadInput(s)))?,
+        )
+    } else {
+        None
+    };
+
+    let result = handle_request(&ctx, builder).await?;
+    let item_count = result.len() as u64;
+
+    if let Some(validation) = validation {
+        if item_count < validation.expected_min || item_count > validation.expected_max {
+            return Err(AlternatorError::new(AlternatorErrorKind::ValidationError(
+                format!(
+                    "Scan returned {item_count} items, expected between {} and {} {}",
+                    validation.expected_min, validation.expected_max, validation.custom_err_msg
+                ),
+            )));
+        }
+    }
+
+    if let Some(Value::Bool(with_result)) = params.get("with_result") {
+        if *with_result {
+            return Ok(result.to_value().into_result()?);
+        }
+    }
+
+    Ok(Value::EmptyTuple)
+}
