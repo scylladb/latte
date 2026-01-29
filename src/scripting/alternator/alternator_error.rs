@@ -1,3 +1,4 @@
+use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 use rune::alloc::fmt::TryWrite;
 use rune::runtime::VmResult;
 use rune::{vm_write, Any};
@@ -14,6 +15,8 @@ pub enum AlternatorErrorKind {
     PartitionRowPresetNotFound(String),
     CustomError(String),
     Error(String),
+    SdkError(String),
+    BadInput(String),
     ConversionError(String),
 }
 
@@ -48,6 +51,8 @@ impl Display for AlternatorError {
             AlternatorErrorKind::PartitionRowPresetNotFound(s) => {
                 write!(f, "Partition row preset not found: {s}")
             }
+            AlternatorErrorKind::BadInput(s) => write!(f, "BadInput: {s}"),
+            AlternatorErrorKind::SdkError(s) => write!(f, "SdkError: {s}"),
             AlternatorErrorKind::ConversionError(s) => write!(f, "ConversionError: {s}"),
         }
     }
@@ -58,6 +63,29 @@ impl std::error::Error for AlternatorError {}
 impl From<rune::runtime::AccessError> for AlternatorError {
     fn from(error: rune::runtime::AccessError) -> Self {
         AlternatorError::new(AlternatorErrorKind::Error(error.to_string()))
+    }
+}
+
+impl From<aws_sdk_dynamodb::error::BuildError> for AlternatorError {
+    fn from(error: aws_sdk_dynamodb::error::BuildError) -> Self {
+        AlternatorError::new(AlternatorErrorKind::SdkError(error.to_string()))
+    }
+}
+
+impl From<aws_sdk_dynamodb::waiters::table_exists::WaitUntilTableExistsError> for AlternatorError {
+    fn from(error: aws_sdk_dynamodb::waiters::table_exists::WaitUntilTableExistsError) -> Self {
+        AlternatorError::new(AlternatorErrorKind::SdkError(error.to_string()))
+    }
+}
+
+impl<E, R> From<SdkError<E, R>> for AlternatorError
+where
+    E: ProvideErrorMetadata,
+{
+    fn from(err: SdkError<E, R>) -> Self {
+        AlternatorError::new(AlternatorErrorKind::SdkError(
+            err.message().unwrap_or("No message").to_string(),
+        ))
     }
 }
 

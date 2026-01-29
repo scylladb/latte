@@ -1,0 +1,69 @@
+use latte::*;
+
+// Usage:
+// latte schema workloads/alternator/api_demo.rn http://172.17.0.2:8000
+// latte run -d 1 workloads/alternator/api_demo.rn http://172.17.0.2:8000
+
+const TABLE = "api_demo_table";
+
+pub async fn schema(db) {
+    // Drop the table (ignoring errors if it doesn't exist) to ensure we always have the up-to-date schema.
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, #{
+        primary_key: "pk",
+        sort_key: #{name: "sk", type: "N"}
+    }).await?;
+}
+
+// Runs a sequence of operations to verify the API.
+pub async fn run(db, i) {
+    // PUT
+    let user_id = "user_" + i.to_string();
+    let user_order = 1;
+    db.put(TABLE, #{
+        pk: user_id,
+        sk: user_order,
+        name: "Random Name",
+        age: 20,
+        list: ["different", 0, "types"],
+        nested: #{
+            num: 1234567890,
+            bool: true
+        }
+    }).await?;
+
+    // GET
+    let key = #{
+        pk: user_id,
+        sk: user_order
+    };
+    db.get(TABLE, key, None).await?;
+    db.get(TABLE, key, #{
+        consistent_read: true
+    }).await?;
+
+    // UPDATE Item
+    db.update(TABLE, key, #{
+        update: "SET #n = :new_name, age = :new_age",
+        "attribute_names": #{
+            "#n": "name"
+        },
+        "attribute_values": #{
+            ":new_name": "Other name",
+            ":new_age": 21
+        }
+    }).await?;
+
+    // QUERY
+    db.query(TABLE, #{
+        query: "pk = :pk",
+        "attribute_values": #{
+            ":pk": user_id
+        },
+        limit: 1,
+        consistent_read: true
+    }).await?;
+
+    // DELETE Item
+    db.delete(TABLE, key).await?;
+}
