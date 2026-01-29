@@ -1,3 +1,5 @@
+use crate::scripting::functions_common::extract_validation_args;
+
 use super::cass_error::{CassError, CassErrorKind};
 use super::context::Context;
 use rune::runtime::{Mut, Ref};
@@ -83,49 +85,20 @@ pub async fn execute_prepared_with_validation(
     params: Value,
     validation_args: Vec<Value>,
 ) -> Result<Value, CassError> {
-    match validation_args.as_slice() {
-        // (int): expected_rows
-        [Value::Integer(expected_rows)] => {
-            ctx.execute_prepared_with_validation(
-                &key,
-                params,
-                *expected_rows as u64,
-                *expected_rows as u64,
-                "",
-            )
-            .await
-        }
-        // (int, int): expected_rows_num_min, expected_rows_num_max
-        [Value::Integer(min), Value::Integer(max)] => {
-            ctx.execute_prepared_with_validation(&key, params, *min as u64, *max as u64, "")
-                .await
-        }
-        // (int, str): expected_rows, custom_err_msg
-        [Value::Integer(expected_rows), Value::String(custom_err_msg)] => {
-            ctx.execute_prepared_with_validation(
-                &key,
-                params,
-                *expected_rows as u64,
-                *expected_rows as u64,
-                &custom_err_msg.borrow_ref().unwrap(),
-            )
-            .await
-        }
-        // (int, int, str): expected_rows_num_min, expected_rows_num_max, custom_err_msg
-        [Value::Integer(min), Value::Integer(max), Value::String(custom_err_msg)] => {
-            ctx.execute_prepared_with_validation(
-                &key,
-                params,
-                *min as u64,
-                *max as u64,
-                &custom_err_msg.borrow_ref().unwrap(),
-            )
-            .await
-        }
-        _ => Err(CassError(CassErrorKind::Error(
-            "Invalid arguments for execute_prepared_with_validation".to_string(),
-        ))),
-    }
+    let args = extract_validation_args(validation_args).map_err(|e| {
+        CassError(CassErrorKind::Error(format!(
+            "execute_prepared_with_validation: {e}"
+        )))
+    })?;
+
+    ctx.execute_prepared_with_validation(
+        &key,
+        params,
+        args.expected_min,
+        args.expected_max,
+        &args.custom_err_msg,
+    )
+    .await
 }
 
 #[rune::function(instance)]

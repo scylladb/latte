@@ -41,6 +41,51 @@ pub fn param(
     Ok(rhs.into_token_stream(ctx)?)
 }
 
+pub struct ValidationArgs {
+    pub expected_min: u64,
+    pub expected_max: u64,
+    pub custom_err_msg: String,
+}
+
+/// Extracts validation arguments from the given vector of Values.
+///
+/// The expected formats are:
+///  * [Integer] -> Exact number of expected rows
+///  * [Integer, Integer] -> Range of expected rows, both values are inclusive.
+///  * [Integer, String] -> Exact number of expected rows and custom error message.
+///  * [Integer, Integer, String] -> Range of expected rows and custom error message.
+pub fn extract_validation_args(validation_args: Vec<Value>) -> Result<ValidationArgs, String> {
+    match validation_args.as_slice() {
+        // (int): expected_rows
+        [Value::Integer(expected_rows)] => Ok(ValidationArgs {
+            expected_min: *expected_rows as u64,
+            expected_max: *expected_rows as u64,
+            custom_err_msg: String::new(),
+        }),
+        // (int, int): expected_rows_num_min, expected_rows_num_max
+        [Value::Integer(min), Value::Integer(max)] => Ok(ValidationArgs {
+            expected_min: *min as u64,
+            expected_max: *max as u64,
+            custom_err_msg: String::new(),
+        }),
+        // (int, str): expected_rows, custom_err_msg
+        [Value::Integer(expected_rows), Value::String(custom_err_msg)] => Ok(ValidationArgs {
+            expected_min: *expected_rows as u64,
+            expected_max: *expected_rows as u64,
+            custom_err_msg: custom_err_msg.borrow_ref().unwrap().to_string(),
+        }),
+        // (int, int, str): expected_rows_num_min, expected_rows_num_max, custom_err_msg
+        [Value::Integer(min), Value::Integer(max), Value::String(custom_err_msg)] => {
+            Ok(ValidationArgs {
+                expected_min: *min as u64,
+                expected_max: *max as u64,
+                custom_err_msg: custom_err_msg.borrow_ref().unwrap().to_string(),
+            })
+        }
+        _ => Err("Invalid validation arguments".to_string()),
+    }
+}
+
 /// Creates a new UUID for current iteration
 #[rune::function]
 pub fn uuid(i: i64) -> Uuid {
