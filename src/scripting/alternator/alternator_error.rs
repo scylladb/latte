@@ -1,7 +1,7 @@
 use rune::alloc::fmt::TryWrite;
 use rune::runtime::VmResult;
 use rune::{vm_write, Any};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
 #[derive(Any, Debug)]
 pub struct AlternatorError(pub AlternatorErrorKind);
@@ -14,6 +14,7 @@ pub enum AlternatorErrorKind {
     PartitionRowPresetNotFound(String),
     CustomError(String),
     Error(String),
+    ConversionError(String),
 }
 
 impl AlternatorError {
@@ -47,11 +48,18 @@ impl Display for AlternatorError {
             AlternatorErrorKind::PartitionRowPresetNotFound(s) => {
                 write!(f, "Partition row preset not found: {s}")
             }
+            AlternatorErrorKind::ConversionError(s) => write!(f, "ConversionError: {s}"),
         }
     }
 }
 
 impl std::error::Error for AlternatorError {}
+
+impl From<rune::runtime::AccessError> for AlternatorError {
+    fn from(error: rune::runtime::AccessError) -> Self {
+        AlternatorError::new(AlternatorErrorKind::Error(error.to_string()))
+    }
+}
 
 pub type DbError = AlternatorError;
 pub type DbErrorKind = AlternatorErrorKind;
