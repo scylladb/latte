@@ -1,0 +1,59 @@
+use latte::*;
+
+// Usage:
+// latte schema workloads/alternator/type_validation.rn http://172.17.0.2:8000
+// latte run -d 1 workloads/alternator/type_validation.rn http://172.17.0.2:8000
+
+const TABLE = "type_validation_table";
+
+pub async fn schema(db) {
+    // Drop the table (ignoring errors if it doesn't exist) to ensure we always have the up-to-date schema.
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "pk").await?;
+}
+
+pub async fn run(db, i) {
+    let item = #{
+        pk: "item_" + i.to_string(),
+        
+        // Boolean "AttributeValue::Bool"
+        bool_true: true,
+        bool_false: false,
+        
+        // Numbers "AttributeValue::N"
+        integer: 42,
+        float: 1.23,
+        
+        // String "AttributeValue::S"
+        test_string: "Hello, World!",
+        
+        // Binary "AttributeValue::B"
+        test_bytes: b"binary data",
+        
+        // List "AttributeValue::L"
+        test_list: [
+            1, 
+            "two", 
+            3.0, 
+            true, 
+            [1, 2], 
+            #{ key: "value" }
+        ],
+        test_empty_list: [],
+        
+        // Map "AttributeValue::M"
+        test_map: #{
+            nested_string: "nested",
+            nested_int: 100,
+            deep_nesting: #{
+                level: 2
+            }
+        },
+        
+        // Option - If Some, serialize the inner value; if None, serialize as Null
+        test_option_some: Some(42),
+        test_option_none: None,
+    };
+
+    db.put(TABLE, item).await?;
+}

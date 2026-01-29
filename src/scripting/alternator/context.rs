@@ -1,4 +1,4 @@
-use super::alternator_error::AlternatorError;
+use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use crate::config::{RetryInterval, ValidationStrategy};
 use crate::error::LatteError;
 use crate::scripting::cluster_info::ClusterInfo;
@@ -82,5 +82,13 @@ impl Context {
     pub fn reset(&self) {
         self.stats.try_lock().unwrap().reset();
         *self.start_time.try_lock().unwrap() = Instant::now();
+    }
+
+    pub fn get_client(&self) -> Result<&Client, AlternatorError> {
+        self.client
+            .as_ref()
+            .ok_or(AlternatorError::new(AlternatorErrorKind::Error(
+                "DynamoDB client is not initialized".to_string(),
+            )))
     }
 }
