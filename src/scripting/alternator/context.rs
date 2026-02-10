@@ -19,6 +19,7 @@ pub struct Context {
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
+    pub no_retry: bool,
     pub partition_row_presets: HashMap<String, RowDistributionPreset>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
@@ -35,6 +36,7 @@ impl Context {
         retry_number: u64,
         retry_interval: RetryInterval,
         validation_strategy: ValidationStrategy,
+        no_retry: bool,
     ) -> Context {
         Context {
             client,
@@ -43,6 +45,7 @@ impl Context {
             retry_number,
             retry_interval,
             validation_strategy,
+            no_retry,
             partition_row_presets: HashMap::new(),
             load_cycle_count: 0,
             data: Value::Object(Shared::new(Object::new()).unwrap()),
@@ -59,6 +62,7 @@ impl Context {
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
+            no_retry: self.no_retry,
             partition_row_presets: self.partition_row_presets.clone(),
             load_cycle_count: self.load_cycle_count,
             data: deserialized,

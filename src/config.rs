@@ -238,6 +238,10 @@ pub struct ConnectionConf {
     )]
     pub retry_interval: RetryInterval,
 
+    /// Disable all retry logic, making every CQL error immediately fatal.
+    #[clap(long("no-retry"))]
+    pub no_retry: bool,
+
     /// Validation strategy is used in the following cases:
     /// - Defines the strategy for 'select' queries validation errors.
     ///   Gets applied when 'execute_prepared_with_validation'

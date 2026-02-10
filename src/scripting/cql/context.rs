@@ -302,6 +302,7 @@ pub struct Context {
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
+    pub no_retry: bool,
     pub partition_row_presets: HashMap<String, RowDistributionPreset>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
@@ -324,6 +325,7 @@ unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
 impl Context {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: Option<Session>,
         page_size: u64,
@@ -332,6 +334,7 @@ impl Context {
         retry_number: u64,
         retry_interval: RetryInterval,
         validation_strategy: ValidationStrategy,
+        no_retry: bool,
     ) -> Context {
         Context {
             start_time: TryLock::new(Instant::now()),
@@ -342,6 +345,7 @@ impl Context {
             retry_number,
             retry_interval,
             validation_strategy,
+            no_retry,
             partition_row_presets: HashMap::new(),
             load_cycle_count: 0,
             preferred_datacenter,
@@ -366,6 +370,7 @@ impl Context {
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
+            no_retry: self.no_retry,
             partition_row_presets: self.partition_row_presets.clone(),
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
@@ -630,6 +635,9 @@ impl Context {
                 Ok((ref page, ref paging_state_response)) => (page, paging_state_response),
                 Err(e) => {
                     let current_error = CassError::query_execution_error(cql, &params, e.clone());
+                    if self.no_retry {
+                        return Err(current_error);
+                    }
                     handle_retry_error(self, current_attempt_num, current_error).await;
                     current_attempt_num += 1;
                     continue; // try again the same query
@@ -733,7 +741,9 @@ impl Context {
                             rows_cnt,
                             custom_err_msg.unwrap_or("").to_string(),
                         );
-                        if self.validation_strategy == ValidationStrategy::Retry {
+                        if self.no_retry {
+                            return Err(current_error);
+                        } else if self.validation_strategy == ValidationStrategy::Retry {
                             handle_retry_error(self, current_attempt_num, current_error).await;
                             current_attempt_num += 1;
                             rows_num = 0; // we retry all pages, so reset cnt
@@ -810,6 +820,9 @@ impl Context {
                             let current_error = CassError(CassErrorKind::Error(format!(
                                 "batch execution failed: {e}"
                             )));
+                            if self.no_retry {
+                                return Err(current_error);
+                            }
                             handle_retry_error(self, current_attempt_num, current_error).await;
                             current_attempt_num += 1;
                             continue;
