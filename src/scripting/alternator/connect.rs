@@ -32,5 +32,6 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> 
         conf.retry_number,
         conf.retry_interval,
         conf.validation_strategy,
+        conf.no_retry,
     ))
 }

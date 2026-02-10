@@ -507,6 +507,7 @@ mod tests {
             None, 501, "foo-dc".to_string(), "foo-rack".to_string(), 0,
             RetryInterval::new("1,2").expect("failed to parse retry interval"),
             ValidationStrategy::Ignore,
+            false,
         )
     }
 
@@ -516,6 +517,7 @@ mod tests {
             None, 0,
             RetryInterval::new("1,2").expect("failed to parse retry interval"),
             ValidationStrategy::Ignore,
+            false,
         )
     }
 

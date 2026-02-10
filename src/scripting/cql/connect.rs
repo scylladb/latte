@@ -8,6 +8,8 @@ use scylla::policies::load_balancing::DefaultPolicy;
 
 use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session_builder::SessionBuilder;
+use scylla::policies::retry::FallthroughRetryPolicy;
+use std::sync::Arc;
 
 fn tls_context(conf: &&ConnectionConf) -> Result<Option<TlsContext>, Box<CassError>> {
     if conf.ssl {
@@ -50,12 +52,15 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
     } else if let Some(_rack) = &conf.rack {
         panic!("Datacenter must also be defined when rack is defined");
     }
-    let profile = ExecutionProfile::builder()
+    let mut profile_builder = ExecutionProfile::builder()
         .consistency(conf.consistency.consistency())
         .serial_consistency(Some(conf.serial_consistency.serial_consistency()))
         .load_balancing_policy(policy_builder.build())
-        .request_timeout(Some(conf.request_timeout))
-        .build();
+        .request_timeout(Some(conf.request_timeout));
+    if conf.no_retry {
+        profile_builder = profile_builder.retry_policy(Arc::new(FallthroughRetryPolicy));
+    }
+    let profile = profile_builder.build();
 
     let scylla_session = SessionBuilder::new()
         .known_nodes(&conf.addresses)
@@ -74,5 +79,6 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         conf.retry_number,
         conf.retry_interval,
         conf.validation_strategy,
+        conf.no_retry,
     ))
 }

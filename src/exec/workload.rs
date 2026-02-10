@@ -480,6 +480,10 @@ impl Workload {
                     Err(LatteError::Database(boxed_err))
                         if matches!(boxed_err.0, DbErrorKind::Overloaded(..)) =>
                     {
+                        if self.context.no_retry {
+                            state.operation_failed(function, duration);
+                            return Err(LatteError::Database(boxed_err));
+                        }
                         // don't stop on overload errors;
                         // they are being counted by the context stats anyways
                         state.operation_failed(function, duration);
@@ -493,6 +497,9 @@ impl Workload {
                         if matches!(boxed_err.0, DbErrorKind::CustomError(_)) =>
                     {
                         state.operation_failed(function, duration);
+                        if self.context.no_retry {
+                            return Err(LatteError::Database(boxed_err));
+                        }
                         match &self.context.validation_strategy {
                             ValidationStrategy::Retry => {
                                 current_err = *boxed_err;
