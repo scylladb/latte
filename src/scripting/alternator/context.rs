@@ -69,11 +69,58 @@ impl Context {
         })
     }
 
+    /// Returns cluster metadata.
     pub async fn cluster_info(&self) -> Result<Option<ClusterInfo>, AlternatorError> {
-        Ok(Some(ClusterInfo {
-            name: "Alternator".to_string(),
-            db_version: "Alternator".to_string(),
-        }))
+        let client = self.get_client()?;
+
+        // Try ScyllaDB-specific system table via the alternator virtual interface
+        let scylla_result = client
+            .scan()
+            .table_name(".scylla.alternator.system.versions")
+            .projection_expression("version, build_id")
+            .send()
+            .await;
+
+        if let Ok(output) = scylla_result {
+            if let Some(items) = output.items {
+                if let Some(item) = items.first() {
+                    let version = item
+                        .get("version")
+                        .and_then(|v| v.as_s().ok().map(|s| s.as_ref()))
+                        .unwrap_or("unknown");
+
+                    let build_id = item
+                        .get("build_id")
+                        .and_then(|v| v.as_s().ok().map(|s| s.as_ref()))
+                        .unwrap_or("unknown");
+
+                    return Ok(Some(ClusterInfo {
+                        name: "".to_string(),
+                        db_version: format!("ScyllaDB {version} with build-id {build_id}"),
+                    }));
+                }
+            }
+        }
+
+        // If the ScyllaDB-specific table is not available, try to determine if it's AWS.
+        let describe_endpoints = client.describe_endpoints().send().await;
+
+        if let Ok(output) = describe_endpoints {
+            let aws_endpoint = output
+                .endpoints()
+                .iter()
+                .find(|endpoint| endpoint.address().contains("amazonaws.com"));
+
+            if let Some(endpoint) = aws_endpoint {
+                return Ok(Some(ClusterInfo {
+                    name: endpoint.address().to_string(),
+                    db_version: "AWS DynamoDB".to_string(),
+                }));
+            }
+        }
+
+        // We couldn't determine the cluster info.
+        Ok(None)
     }
 
     pub fn take_session_stats(&self) -> SessionStats {
