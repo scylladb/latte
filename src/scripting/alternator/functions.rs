@@ -1,5 +1,6 @@
+use crate::config::ValidationStrategy;
 use crate::scripting::alternator::traits::{AlternatorRequest, IntoAlternatorOutput};
-use crate::scripting::functions_common::extract_validation_args;
+use crate::scripting::functions_common::{extract_validation_args, ValidationArgs};
 use crate::scripting::retry_error::handle_retry_error;
 
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
@@ -132,6 +133,50 @@ async fn handle_request(
         };
     }
     Err(AlternatorError::query_retries_exceeded(ctx.retry_number))
+}
+
+async fn handle_request_with_validation(
+    ctx: &Context,
+    builder: impl AlternatorRequest,
+    validation: Option<ValidationArgs>,
+    operation_name: &str,
+) -> Result<Vec<Value>, AlternatorError> {
+    let mut current_attempt_num: u64 = 0;
+    loop {
+        let result = handle_request(ctx, builder.clone()).await?;
+
+        let validation = match validation {
+            None => return Ok(result),
+            Some(ref v) => v,
+        };
+
+        let item_count = result.len() as u64;
+        if item_count >= validation.expected_min && item_count <= validation.expected_max {
+            return Ok(result);
+        }
+
+        let current_error = AlternatorError::new(AlternatorErrorKind::ValidationError(format!(
+            "{operation_name} returned {item_count} items, expected between {} and {} {}",
+            validation.expected_min, validation.expected_max, validation.custom_err_msg
+        )));
+
+        match ctx.validation_strategy {
+            ValidationStrategy::Retry => {
+                if current_attempt_num >= ctx.retry_number {
+                    return Err(current_error);
+                }
+                handle_retry_error(ctx, current_attempt_num, current_error).await;
+                current_attempt_num += 1;
+            }
+            ValidationStrategy::FailFast => {
+                return Err(current_error);
+            }
+            ValidationStrategy::Ignore => {
+                handle_retry_error(ctx, current_attempt_num, current_error).await;
+                return Ok(result);
+            }
+        }
+    }
 }
 
 /// Creates a new table.
@@ -442,19 +487,7 @@ pub async fn query(
         None
     };
 
-    let result = handle_request(&ctx, builder).await?;
-    let item_count = result.len() as u64;
-
-    if let Some(validation) = validation {
-        if item_count < validation.expected_min || item_count > validation.expected_max {
-            return Err(AlternatorError::new(AlternatorErrorKind::ValidationError(
-                format!(
-                    "Query returned {item_count} items, expected between {} and {} {}",
-                    validation.expected_min, validation.expected_max, validation.custom_err_msg
-                ),
-            )));
-        }
-    }
+    let result = handle_request_with_validation(&ctx, builder, validation, "Query").await?;
 
     if let Some(Value::Bool(with_result)) = params.get("with_result") {
         if *with_result {
@@ -525,19 +558,7 @@ pub async fn scan(
         None
     };
 
-    let result = handle_request(&ctx, builder).await?;
-    let item_count = result.len() as u64;
-
-    if let Some(validation) = validation {
-        if item_count < validation.expected_min || item_count > validation.expected_max {
-            return Err(AlternatorError::new(AlternatorErrorKind::ValidationError(
-                format!(
-                    "Scan returned {item_count} items, expected between {} and {} {}",
-                    validation.expected_min, validation.expected_max, validation.custom_err_msg
-                ),
-            )));
-        }
-    }
+    let result = handle_request_with_validation(&ctx, builder, validation, "Scan").await?;
 
     if let Some(Value::Bool(with_result)) = params.get("with_result") {
         if *with_result {
