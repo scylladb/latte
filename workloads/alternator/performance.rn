@@ -1,0 +1,134 @@
+// USAGE:
+// a) Create schema:
+// $ latte schema workloads/alternator/performance.rn http://172.17.0.2:8000
+//
+// b) run benchmark:
+// 1) 100% GetItem workload with set target throughput
+// $ latte run workloads/alternator/performance.rn http://172.17.0.2:8000 \
+//     -f get:1.0 -r <throughput>
+
+// 2) 100% UpdateItem workload with set target throughput
+// $ latte run workloads/alternator/performance.rn http://172.17.0.2:8000 \
+//     -f update:1.0 -r <throughput>
+
+// 3) 50% GetItem 50% UpdateItem mixed workload with set target throughput
+// $ latte run workloads/alternator/performance.rn http://172.17.0.2:8000 \
+//     -f get:0.5 -f update:0.5 -r <throughput>
+
+// 4) 100% GetItem with unlimited throughput
+// $ latte run workloads/alternator/performance.rn http://172.17.0.2:8000 \
+//     -f get:1.0
+
+// 5) 100% UpdateItem with unlimited throughput
+// $ latte run workloads/alternator/performance.rn http://172.17.0.2:8000 \
+//     -f update:1.0
+
+use latte::*;
+
+const TABLE = latte::param!("table", "latte_performance");
+const ROW_COUNT = latte::param!("row_count", 10000);
+const REQUEST_DISTRIBUTION = latte::param!("requestdistribution", "uniform");
+const CONSISTENT_READS = latte::param!("alternator.consistentReads", false);
+
+const FIELD_COUNT = latte::param!("fieldcount", 10);
+const FIELD_SIZE = latte::param!("fieldlength", 512);
+
+// NOTE: Latte CLI expects string params to be quoted, e.g. -P 'requestdistribution="uniform"'.
+
+pub async fn schema(db) {
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "pk").await?;
+}
+
+pub async fn prepare(ctx) {
+    ctx.load_cycle_count = ROW_COUNT;
+}
+
+fn get_key_name(key_num) {
+    return key_num.to_string();
+}
+
+// Generates a key index according to the selected distribution.
+fn get_key_num_for_row_count(i, row_count) {
+    let distribution = REQUEST_DISTRIBUTION;
+    if row_count < 1 {
+        return 0;
+    }
+
+    if distribution == "normal" {
+        // Use a normal distribution centered at row_count / 2 with std_dev = row_count / 10.
+        let row_count_f = row_count as f64;
+        let mean = 0.5 * row_count_f;
+        let std_dev = 0.1 * row_count_f;
+        let val = latte::normal(i, mean, std_dev);
+
+        let clamped = if val < 0.0 {
+            0.0
+        } else if val > row_count_f - 1.0 {
+            row_count_f - 1.0
+        } else {
+            val
+        };
+        return (clamped + 0.5) as i64;
+    }
+    if distribution == "sequential" {
+        return i % row_count;
+    }
+
+    // YCSB's default requestdistribution is uniform.
+    if distribution == "uniform" {
+        return latte::hash_range(i, row_count);
+    }
+
+    // Fallback for unsupported YCSB distributions (zipfian, latest, hotspot, exponential).
+    return latte::hash_range(i, row_count);
+}
+
+fn get_key_num(i) {
+    return get_key_num_for_row_count(i, ROW_COUNT);
+}
+
+// Generates a payload with specified number of fields and size.
+fn generate_item(pk_str, i) {
+    let field_count = FIELD_COUNT;
+    let field_size = FIELD_SIZE;
+    let item = #{ pk: pk_str };
+    for f in 0..field_count {
+        item["field" + f.to_string()] = latte::text(latte::hash2(i, f), field_size);
+    }
+    return item;
+}
+
+pub async fn load(db, i) {
+    let pk_str = get_key_name(i);
+    db.put(TABLE, generate_item(pk_str, i)).await?;
+}
+
+pub async fn get(db, i) {
+    let key_num = get_key_num(i);
+    let key = #{ pk: get_key_name(key_num) };
+
+    db.get(TABLE, key, #{ consistent_read: CONSISTENT_READS }).await?;
+}
+
+pub async fn update(db, i) {
+    let key_num = get_key_num(i);
+    let key = #{ pk: get_key_name(key_num) };
+
+    let field_count = FIELD_COUNT;
+    let field_size = FIELD_SIZE;
+
+    let f = latte::hash_range(i, field_count);
+    let f_str = f.to_string();
+    let expr = "SET field" + f_str + "=:v";
+    let values = #{};
+    values[":v"] = latte::text(latte::hash2(i, f), field_size);
+
+    db.update(TABLE, key, #{ update: expr, attribute_values: values }).await?;
+}
+
+pub async fn insert(db, i) {
+    let key_num = ROW_COUNT + i;
+    let pk_str = get_key_name(key_num);
+    db.put(TABLE, generate_item(pk_str, key_num)).await?;
+}
