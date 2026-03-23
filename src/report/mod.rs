@@ -484,11 +484,13 @@ impl Display for RunConfigCmp<'_> {
             self.line("Cluster", "", |conf| {
                 OptionDisplay(conf.cluster_name.clone())
             }),
+            #[cfg(feature = "cql")]
             self.line("Datacenter", "", |conf| {
-                conf.connection.datacenter.clone().unwrap_or_default()
+                conf.connection.db.datacenter.clone().unwrap_or_default()
             }),
+            #[cfg(feature = "cql")]
             self.line("Rack", "", |conf| {
-                conf.connection.rack.clone().unwrap_or_default()
+                conf.connection.db.rack.clone().unwrap_or_default()
             }),
             self.line("DB version", "", |conf| {
                 OptionDisplay(conf.db_version.clone())
@@ -507,11 +509,12 @@ impl Display for RunConfigCmp<'_> {
             }),
             #[cfg(feature = "cql")]
             self.line("Consistency", "", |conf| {
-                conf.connection.consistency.consistency().to_string()
+                conf.connection.db.consistency.consistency().to_string()
             }),
             #[cfg(feature = "cql")]
             self.line("Serial consistency", "", |conf| {
                 conf.connection
+                    .db
                     .serial_consistency
                     .serial_consistency()
                     .to_string()
@@ -550,8 +553,9 @@ impl Display for RunConfigCmp<'_> {
 
         let lines: Vec<Box<dyn Display>> = vec![
             self.line("Threads", "", |conf| Quantity::from(conf.threads)),
+            #[cfg(feature = "cql")]
             self.line("Connections", "", |conf| {
-                Quantity::from(conf.connection.count)
+                Quantity::from(conf.connection.db.count)
             }),
             self.line("Concurrency", "req", |conf| {
                 Quantity::from(conf.concurrency)

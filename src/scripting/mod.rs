@@ -17,12 +17,16 @@ mod cql;
 #[cfg(feature = "cql")]
 pub use cql::cass_error as db_error;
 #[cfg(feature = "cql")]
+pub use cql::config as db_config;
+#[cfg(feature = "cql")]
 pub use cql::connect;
 #[cfg(feature = "cql")]
 pub use cql::context;
 
 #[cfg(feature = "alternator")]
 pub use alternator::alternator_error as db_error;
+#[cfg(feature = "alternator")]
+pub use alternator::config as db_config;
 #[cfg(feature = "alternator")]
 pub use alternator::connect;
 #[cfg(feature = "alternator")]
