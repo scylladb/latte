@@ -10,14 +10,32 @@ use aws_sdk_dynamodb::Client;
 pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> {
     let address = conf.addresses.first().cloned().unwrap_or_default();
 
-    // TODO: use latte parameters for setting the configuration
-    let config = aws_config::defaults(BehaviorVersion::latest())
+    let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
         .endpoint_url(&address)
-        .region(Region::new("us-east-1"))
-        .credentials_provider(Credentials::new("", "", None, None, ""))
         .retry_config(RetryConfig::standard().with_max_attempts(1))
-        .load()
-        .await;
+        .timeout_config(
+            aws_config::timeout::TimeoutConfig::builder()
+                .operation_timeout(conf.request_timeout)
+                .build(),
+        );
+
+    // We only specify custom credentials if aws_credentials flag is not set.
+    // If aws_credentials flag is set, the SDK will automatically use credentials from the environment.
+    if !conf.db.aws_credentials {
+        let creds = Credentials::new(
+            &conf.db.access_key_id,
+            &conf.db.secret_access_key,
+            None,
+            None,
+            "",
+        );
+
+        config_loader = config_loader
+            .credentials_provider(creds)
+            .region(Region::new(conf.db.region.clone()));
+    }
+
+    let config = config_loader.load().await;
 
     let client = Client::new(&config);
 
