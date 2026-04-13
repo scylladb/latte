@@ -26,7 +26,7 @@ pub async fn run(db, i) {
         });
     }
     
-    db.batch_write_item(TABLE, write_requests).await?;
+    db.batch_write_item(TABLE, write_requests, ()).await?;
     
     let keys = [];
     for j in 0..batch_size {
@@ -56,7 +56,7 @@ pub async fn run(db, i) {
         });
     }
     
-    db.batch_write_item(TABLE, delete_requests).await?;
+    db.batch_write_item(TABLE, delete_requests, ()).await?;
 
     let result_after_delete = db.batch_get_item(TABLE, keys, #{
         consistent_read: true,
