@@ -11,7 +11,8 @@ use super::types::rune_object_to_alternator_map;
 use super::types::{BSET_KEY, NSET_KEY, SSET_KEY};
 use aws_sdk_dynamodb::client::Waiters;
 use aws_sdk_dynamodb::types::{
-    AttributeDefinition, KeySchemaElement, KeyType, ScalarAttributeType,
+    AttributeDefinition, DeleteRequest, KeySchemaElement, KeyType, KeysAndAttributes, PutRequest,
+    ScalarAttributeType, WriteRequest,
 };
 use rune::runtime::{Object, Ref, Shared, VmResult};
 use rune::{ToValue, Value};
@@ -411,6 +412,130 @@ pub async fn update(
             attr_values.clone().into_ref()?,
         )?));
     }
+
+    handle_request(&ctx, builder).await?;
+
+    Ok(())
+}
+
+/// Batch retrieves items from the table.
+///
+/// If `with_result` is set to true, the retrieved items are returned as a `Vec<Object>`.
+/// Otherwise, the unit value is returned.
+///
+/// # Arguments
+/// * `table_name` - The name of the table.
+/// * `keys` - A list of items, where each item is an object representing a primary key.
+/// * `options` - Optional parameters. An object containing:
+///   - `consistent_read`: Boolean to enable consistent read for all keys (default: false).
+///   - `with_result`: If true, the retrieved items are returned (default: false).
+#[rune::function(instance)]
+pub async fn batch_get_item(
+    ctx: Ref<Context>,
+    table_name: Ref<str>,
+    keys: Ref<rune::runtime::Vec>,
+    options: Value,
+) -> Result<Value, AlternatorError> {
+    let client = ctx.get_client()?;
+
+    // Convert keys vector to DynamoDB keys
+    let keys_list = keys
+        .iter()
+        .map(|key_val| match key_val {
+            Value::Object(key_obj) => rune_object_to_alternator_map(key_obj.clone().into_ref()?),
+            _ => bad_input("Each key in the keys list must be an object"),
+        })
+        .collect::<Result<_, _>>()?;
+
+    // BatchGetItem requires the keys to be wrapped in a KeysAndAttributes struct
+    let mut keys_request_builder = KeysAndAttributes::builder().set_keys(Some(keys_list));
+    if let Value::Object(opts) = &options {
+        if let Some(Value::Bool(consistent_read)) = opts.borrow_ref()?.get("consistent_read") {
+            keys_request_builder = keys_request_builder.consistent_read(*consistent_read);
+        }
+    }
+
+    let builder = client
+        .batch_get_item()
+        .request_items(table_name.deref(), keys_request_builder.build()?);
+
+    let result = handle_request(&ctx, builder).await?;
+
+    if let Value::Object(opts) = &options {
+        if let Some(Value::Bool(with_result)) = opts.borrow_ref()?.get("with_result") {
+            if *with_result {
+                return Ok(result.to_value().into_result()?);
+            }
+        }
+    }
+
+    Ok(Value::EmptyTuple)
+}
+
+/// Batch writes items to the table.
+///
+/// # Arguments
+/// * `table_name` - The name of the table.
+/// * `write_requests` - A list of write requests. Each request is an object containing:
+///   - `type`: Either "put" or "delete".
+///   - `item`: For put requests, the item object to insert.
+///   - `key`: For delete requests, the key object to delete.
+#[rune::function(instance)]
+pub async fn batch_write_item(
+    ctx: Ref<Context>,
+    table_name: Ref<str>,
+    write_requests: Ref<rune::runtime::Vec>,
+) -> Result<(), AlternatorError> {
+    let client = ctx.get_client()?;
+
+    let writes = write_requests
+        .iter()
+        .map(|req_val| {
+            let Value::Object(req_obj) = req_val else {
+                return bad_input("Each write request must be an object");
+            };
+
+            let req_ref = req_obj.borrow_ref()?;
+
+            let req_type = match req_ref.get("type") {
+                Some(Value::String(t)) => t.borrow_ref()?.to_string(),
+                _ => return bad_input("Write request must have a 'type' field (put or delete)"),
+            };
+
+            match req_type.as_str() {
+                "put" => {
+                    let Some(Value::Object(item)) = req_ref.get("item") else {
+                        return bad_input("Put request must have an 'item' field");
+                    };
+
+                    let item_map = rune_object_to_alternator_map(item.clone().into_ref()?)?;
+
+                    Ok(WriteRequest::builder()
+                        .put_request(PutRequest::builder().set_item(Some(item_map)).build()?)
+                        .build())
+                }
+                "delete" => {
+                    let Some(Value::Object(key)) = req_ref.get("key") else {
+                        return bad_input("Delete request must have a 'key' field");
+                    };
+
+                    let key_map = rune_object_to_alternator_map(key.clone().into_ref()?)?;
+
+                    Ok(WriteRequest::builder()
+                        .delete_request(DeleteRequest::builder().set_key(Some(key_map)).build()?)
+                        .build())
+                }
+                _ => bad_input(format!(
+                    "Invalid request type: {}, must be 'put' or 'delete'",
+                    req_type
+                )),
+            }
+        })
+        .collect::<Result<_, _>>()?;
+
+    let builder = client
+        .batch_write_item()
+        .request_items(table_name.deref(), writes);
 
     handle_request(&ctx, builder).await?;
 

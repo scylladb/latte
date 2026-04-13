@@ -2,11 +2,12 @@ use super::alternator_error::AlternatorError;
 use super::types::alternator_map_to_rune_object;
 use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_dynamodb::operation::{
+    batch_get_item::BatchGetItemOutput, batch_write_item::BatchWriteItemOutput,
     create_table::CreateTableOutput, delete_item::DeleteItemOutput,
     delete_table::DeleteTableOutput, get_item::GetItemOutput, put_item::PutItemOutput,
     query::QueryOutput, scan::ScanOutput, update_item::UpdateItemOutput,
 };
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes, WriteRequest};
 use rune::Value;
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,6 +15,8 @@ use std::future::Future;
 #[derive(Clone)]
 pub(super) enum PaginationToken {
     LastEvaluatedKey(HashMap<String, AttributeValue>),
+    UnprocessedKeys(HashMap<String, KeysAndAttributes>),
+    UnprocessedItems(HashMap<String, Vec<WriteRequest>>),
 }
 
 pub(super) type AlternatorOutputResult =
@@ -64,6 +67,38 @@ impl IntoAlternatorOutput for ScanOutput {
             self.last_evaluated_key
                 .map(PaginationToken::LastEvaluatedKey),
         ))
+    }
+}
+
+impl IntoAlternatorOutput for BatchGetItemOutput {
+    fn into_output(self) -> AlternatorOutputResult {
+        let responses = self.responses.unwrap_or_default();
+
+        let result = responses
+            .into_values()
+            .flatten()
+            .map(alternator_map_to_rune_object)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let len = result.len() as u64;
+
+        let token = self
+            .unprocessed_keys
+            .filter(|keys| !keys.is_empty())
+            .map(PaginationToken::UnprocessedKeys);
+
+        Ok((result, len, token))
+    }
+}
+
+impl IntoAlternatorOutput for BatchWriteItemOutput {
+    fn into_output(self) -> AlternatorOutputResult {
+        let token = self
+            .unprocessed_items
+            .filter(|keys| !keys.is_empty())
+            .map(PaginationToken::UnprocessedItems);
+
+        Ok((vec![], 0, token))
     }
 }
 
@@ -152,8 +187,12 @@ impl_alternator_request_no_pagination!(
     aws_sdk_dynamodb::operation::update_item::builders::UpdateItemFluentBuilder
 );
 
-impl_send_request!(aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder);
-impl_send_request!(aws_sdk_dynamodb::operation::scan::builders::ScanFluentBuilder);
+impl_send_request!(
+    aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder,
+    aws_sdk_dynamodb::operation::scan::builders::ScanFluentBuilder,
+    aws_sdk_dynamodb::operation::batch_get_item::builders::BatchGetItemFluentBuilder,
+    aws_sdk_dynamodb::operation::batch_write_item::builders::BatchWriteItemFluentBuilder
+);
 
 impl AlternatorRequest for aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder {
     fn set_pagination(self, token: Option<PaginationToken>, limit: Option<i32>) -> Self {
@@ -190,5 +229,41 @@ impl AlternatorRequest for aws_sdk_dynamodb::operation::scan::builders::ScanFlue
     }
     fn get_limit_val(&self) -> Option<i32> {
         *self.get_limit()
+    }
+}
+
+impl AlternatorRequest
+    for aws_sdk_dynamodb::operation::batch_get_item::builders::BatchGetItemFluentBuilder
+{
+    fn set_pagination(self, token: Option<PaginationToken>, _limit: Option<i32>) -> Self {
+        if let Some(PaginationToken::UnprocessedKeys(keys)) = token {
+            self.set_request_items(Some(keys))
+        } else {
+            self
+        }
+    }
+    fn has_pagination(&self) -> bool {
+        true
+    }
+    fn get_limit_val(&self) -> Option<i32> {
+        None
+    }
+}
+
+impl AlternatorRequest
+    for aws_sdk_dynamodb::operation::batch_write_item::builders::BatchWriteItemFluentBuilder
+{
+    fn set_pagination(self, token: Option<PaginationToken>, _limit: Option<i32>) -> Self {
+        if let Some(PaginationToken::UnprocessedItems(items)) = token {
+            self.set_request_items(Some(items))
+        } else {
+            self
+        }
+    }
+    fn has_pagination(&self) -> bool {
+        true
+    }
+    fn get_limit_val(&self) -> Option<i32> {
+        None
     }
 }
