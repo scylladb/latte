@@ -105,6 +105,8 @@ fn try_install(
     context_module.function_meta(functions::get)?;
     context_module.function_meta(functions::delete)?;
     context_module.function_meta(functions::update)?;
+    context_module.function_meta(functions::batch_get_item)?;
+    context_module.function_meta(functions::batch_write_item)?;
     context_module.function_meta(functions::query)?;
     context_module.function_meta(functions::scan)?;
 
