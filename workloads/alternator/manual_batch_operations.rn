@@ -1,0 +1,39 @@
+use latte::*;
+
+// Usage:
+// latte schema workloads/alternator/manual_batch_operations.rn http://172.17.0.2:8000
+// latte run -d 1 workloads/alternator/manual_batch_operations.rn http://172.17.0.2:8000
+
+const TABLE = "batch_ops_table";
+
+pub async fn schema(db) {
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "pk").await?;
+}
+
+pub async fn run(db, i) {
+    let batch_size = 5;
+    let base_id = `user_${i}_`;
+    
+    let write_requests = [];
+    for j in 0..batch_size {
+        write_requests.push(#{
+            type: "put",
+            item: #{
+                pk: `${base_id}${j}`,
+                data: `batch_item_${j}`
+            }
+        });
+    }
+    
+    // Manual pagination loop for batch writes
+    let current_writes = write_requests;
+    loop {
+        let res = db.batch_write_item(TABLE, current_writes, #{ get_unprocessed: true }).await?;
+        if let Some(unprocessed) = res.get("unprocessed_items") {
+            current_writes = unprocessed;
+        } else {
+            break; // All items processed
+        }
+    }
+}
