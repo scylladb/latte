@@ -13,6 +13,7 @@ pub struct DbConnectionConf {
     pub access_key_id: String,
 
     /// Secret access key.
+    #[serde(skip_serializing)] // Don't save the secret to generated reports.
     #[clap(long("secret-access-key"), default_value = "")]
     pub secret_access_key: String,
 

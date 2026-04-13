@@ -20,6 +20,7 @@ pub struct DbConnectionConf {
     pub user: String,
 
     /// Password to use if password authentication is required by the server
+    #[serde(skip_serializing)] // Don't save the password to generated reports.
     #[clap(long, env("CASSANDRA_PASSWORD"), default_value = "")]
     pub password: String,
 
