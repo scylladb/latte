@@ -11,8 +11,13 @@ use rune::Value;
 use std::collections::HashMap;
 use std::future::Future;
 
+#[derive(Clone)]
+pub(super) enum PaginationToken {
+    LastEvaluatedKey(HashMap<String, AttributeValue>),
+}
+
 pub(super) type AlternatorOutputResult =
-    Result<(Vec<Value>, u64, Option<HashMap<String, AttributeValue>>), AlternatorError>;
+    Result<(Vec<Value>, u64, Option<PaginationToken>), AlternatorError>;
 
 pub(super) trait IntoAlternatorOutput {
     fn into_output(self) -> AlternatorOutputResult;
@@ -36,7 +41,12 @@ impl IntoAlternatorOutput for QueryOutput {
             result.push(alternator_map_to_rune_object(item)?);
         }
         let len = result.len() as u64;
-        Ok((result, len, self.last_evaluated_key))
+        Ok((
+            result,
+            len,
+            self.last_evaluated_key
+                .map(PaginationToken::LastEvaluatedKey),
+        ))
     }
 }
 
@@ -48,7 +58,12 @@ impl IntoAlternatorOutput for ScanOutput {
             result.push(alternator_map_to_rune_object(item)?);
         }
         let len = result.len() as u64;
-        Ok((result, len, self.last_evaluated_key))
+        Ok((
+            result,
+            len,
+            self.last_evaluated_key
+                .map(PaginationToken::LastEvaluatedKey),
+        ))
     }
 }
 
@@ -94,11 +109,7 @@ pub(super) trait SendRequest {
 }
 
 pub(super) trait AlternatorRequest: SendRequest + Clone {
-    fn set_pagination(
-        self,
-        token: Option<HashMap<String, AttributeValue>>,
-        limit: Option<i32>,
-    ) -> Self;
+    fn set_pagination(self, token: Option<PaginationToken>, limit: Option<i32>) -> Self;
     fn has_pagination(&self) -> bool;
     fn get_limit_val(&self) -> Option<i32>;
 }
@@ -124,7 +135,7 @@ macro_rules! impl_alternator_request_no_pagination {
         $(
             impl_send_request!($t);
             impl AlternatorRequest for $t {
-                fn set_pagination(self, _: Option<HashMap<String, AttributeValue>>, _: Option<i32>) -> Self { self }
+                fn set_pagination(self, _: Option<PaginationToken>, _: Option<i32>) -> Self { self }
                 fn has_pagination(&self) -> bool { false }
                 fn get_limit_val(&self) -> Option<i32> { None }
             }
@@ -145,12 +156,11 @@ impl_send_request!(aws_sdk_dynamodb::operation::query::builders::QueryFluentBuil
 impl_send_request!(aws_sdk_dynamodb::operation::scan::builders::ScanFluentBuilder);
 
 impl AlternatorRequest for aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder {
-    fn set_pagination(
-        self,
-        token: Option<HashMap<String, AttributeValue>>,
-        limit: Option<i32>,
-    ) -> Self {
-        let mut b = self.set_exclusive_start_key(token);
+    fn set_pagination(self, token: Option<PaginationToken>, limit: Option<i32>) -> Self {
+        let mut b = self.set_exclusive_start_key(match token {
+            Some(PaginationToken::LastEvaluatedKey(key)) => Some(key),
+            _ => None,
+        });
         if let Some(limit) = limit {
             b = b.limit(limit);
         }
@@ -165,12 +175,11 @@ impl AlternatorRequest for aws_sdk_dynamodb::operation::query::builders::QueryFl
 }
 
 impl AlternatorRequest for aws_sdk_dynamodb::operation::scan::builders::ScanFluentBuilder {
-    fn set_pagination(
-        self,
-        token: Option<HashMap<String, AttributeValue>>,
-        limit: Option<i32>,
-    ) -> Self {
-        let mut b = self.set_exclusive_start_key(token);
+    fn set_pagination(self, token: Option<PaginationToken>, limit: Option<i32>) -> Self {
+        let mut b = self.set_exclusive_start_key(match token {
+            Some(PaginationToken::LastEvaluatedKey(key)) => Some(key),
+            _ => None,
+        });
         if let Some(limit) = limit {
             b = b.limit(limit);
         }
