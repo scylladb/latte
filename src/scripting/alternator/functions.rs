@@ -1,5 +1,7 @@
 use crate::config::ValidationStrategy;
-use crate::scripting::alternator::traits::{AlternatorRequest, IntoAlternatorOutput};
+use crate::scripting::alternator::traits::{
+    AlternatorRequest, IntoAlternatorOutput, PaginationToken,
+};
 use crate::scripting::functions_common::{extract_validation_args, ValidationArgs};
 use crate::scripting::retry_error::handle_retry_error;
 
@@ -76,7 +78,7 @@ async fn handle_request(
     ctx: &Context,
     builder: impl AlternatorRequest,
 ) -> Result<Vec<Value>, AlternatorError> {
-    let mut token: Option<HashMap<String, aws_sdk_dynamodb::types::AttributeValue>> = None;
+    let mut token: Option<PaginationToken> = None;
     let mut current_attempt_num = 0;
     let mut all_pages_duration = Duration::ZERO;
     let mut all_items = Vec::new();
