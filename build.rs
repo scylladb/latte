@@ -11,7 +11,7 @@ const UNKNOWN: &str = "unknown";
 #[cfg(feature = "cql")]
 const DRIVER_PKG_NAME: &str = "scylla";
 #[cfg(feature = "alternator")]
-const DRIVER_PKG_NAME: &str = "aws-sdk-dynamodb";
+const DRIVER_PKG_NAME: &str = "alternator-driver";
 
 #[cfg(feature = "cql")]
 #[cfg(fetch_extended_version_info)]

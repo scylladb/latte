@@ -1,7 +1,7 @@
 #[cfg(feature = "cql")]
 const DRIVER_PKG_NAME: &str = "scylla";
 #[cfg(feature = "alternator")]
-const DRIVER_PKG_NAME: &str = "aws-sdk-dynamodb";
+const DRIVER_PKG_NAME: &str = "alternator-driver";
 
 #[derive(Debug)]
 pub struct VersionInfo {

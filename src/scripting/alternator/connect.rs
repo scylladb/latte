@@ -1,11 +1,11 @@
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
 use crate::config::ConnectionConf;
+use alternator_driver::AlternatorClient as Client;
 use aws_config::retry::RetryConfig;
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::config::{Credentials, Region};
 use aws_sdk_dynamodb::error::DisplayErrorContext;
-use aws_sdk_dynamodb::Client;
 
 pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> {
     let address = conf.addresses.first().cloned().unwrap_or_default();

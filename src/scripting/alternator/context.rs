@@ -4,7 +4,7 @@ use crate::error::LatteError;
 use crate::scripting::cluster_info::ClusterInfo;
 use crate::scripting::row_distribution::RowDistributionPreset;
 use crate::stats::session::SessionStats;
-use aws_sdk_dynamodb::Client;
+use alternator_driver::AlternatorClient as Client;
 use rune::runtime::Object;
 use rune::{Any, Value};
 use std::collections::HashMap;
