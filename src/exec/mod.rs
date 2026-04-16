@@ -12,7 +12,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use tokio::pin;
 use tokio::signal::ctrl_c;
 
 use crate::error::{LatteError, Result};
