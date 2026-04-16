@@ -1,4 +1,4 @@
-FROM rust:1.90-slim-trixie AS builder
+FROM rust:1.94-slim-trixie AS builder
 
 WORKDIR /usr/src/app
 
