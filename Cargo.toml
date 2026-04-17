@@ -36,8 +36,8 @@ openssl = "0.10.72"
 parse_duration = "2.1.1"
 pin-project = "1.1"
 plotters = { version = "0.3", default-features = false, features = ["line_series", "svg_backend", "full_palette"] }
-rand = { version = "0.8", default-features = false, features = ["small_rng", "std"] }
-rand_distr = "0.4"
+rand = { version = "0.9.4", default-features = false, features = ["small_rng", "std", "thread_rng"] }
+rand_distr = "0.5"
 regex = "1.5"
 rune = "0.13"
 rust_decimal = "1.36"

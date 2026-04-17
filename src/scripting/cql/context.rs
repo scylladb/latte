@@ -347,7 +347,7 @@ impl Context {
             preferred_datacenter,
             preferred_rack,
             data: Value::Object(Shared::new(Object::new()).unwrap()),
-            rng: rand::thread_rng(),
+            rng: rand::rng(),
         }
     }
 
@@ -372,7 +372,7 @@ impl Context {
             preferred_rack: self.preferred_rack.clone(),
             data: deserialized,
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
-            rng: rand::thread_rng(),
+            rng: rand::rng(),
         })
     }
 

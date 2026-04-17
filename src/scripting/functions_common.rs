@@ -4,14 +4,14 @@ use crate::scripting::rune_uuid::Uuid;
 use crate::scripting::Resources;
 use chrono::Utc;
 use metrohash::MetroHash64;
-use rand::distributions::Distribution;
+use rand::distr::Distribution;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rand_distr::{Normal, Uniform};
 use rune::macros::{quote, MacroContext, TokenStream};
 use rune::parse::Parser;
 use rune::runtime::{Function, Ref, VmError, VmResult};
 use rune::{ast, vm_try, Value};
-use statrs::distribution::{Normal, Uniform};
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -95,7 +95,7 @@ pub fn normal(i: i64, mean: f64, std_dev: f64) -> VmResult<f64> {
 #[rune::function]
 pub fn normal_f32(i: i64, mean: f32, std_dev: f32) -> VmResult<f32> {
     let mut rng = SmallRng::seed_from_u64(i as u64);
-    let distribution = vm_try!(
+    let distribution: Normal<f64> = vm_try!(
         Normal::new(mean.into(), std_dev.into()).map_err(|e| VmError::panic(format!("{e}")))
     );
     VmResult::Ok(distribution.sample(&mut rng) as f32)
@@ -113,7 +113,7 @@ pub fn uniform(i: i64, min: f64, max: f64) -> VmResult<f64> {
 #[rune::function]
 pub fn blob(seed: i64, len: usize) -> Vec<u8> {
     let mut rng = SmallRng::seed_from_u64(seed as u64);
-    (0..len).map(|_| rng.gen::<u8>()).collect()
+    (0..len).map(|_| rng.random::<u8>()).collect()
 }
 
 /// Generates random string of given length.
@@ -128,7 +128,7 @@ pub fn text(seed: i64, len: usize) -> String {
     let mut rng = SmallRng::seed_from_u64(seed as u64);
     (0..len)
         .map(|_| {
-            let idx = rng.gen_range(0..charset.len());
+            let idx = rng.random_range(0..charset.len());
             charset[idx]
         })
         .collect()

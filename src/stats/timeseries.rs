@@ -229,7 +229,7 @@ mod test {
         let mut estimator = TimeSeriesStats::default();
         const N: u64 = 1000;
         for _ in 0..N {
-            estimator.record(rng.gen(), 1.0);
+            estimator.record(rng.random(), 1.0);
         }
         assert_gt!(estimator.effective_sample_size(), N / 2);
         assert_le!(estimator.effective_sample_size(), N);
@@ -249,7 +249,7 @@ mod test {
         let mut rng = SmallRng::seed_from_u64(1);
         let mut estimator = TimeSeriesStats::default();
         for _ in 0..n {
-            let v = rng.gen();
+            let v = rng.random();
             for _ in 0..cluster_size {
                 estimator.record(v, 1.0);
             }
@@ -263,7 +263,7 @@ mod test {
         const COUNT: usize = 1000;
         let mut rng = SmallRng::seed_from_u64(1);
         let data: Vec<_> = (0..COUNT)
-            .map(|i| 0.001 * i as f64 + rng.gen::<f64>())
+            .map(|i| 0.001 * i as f64 + rng.random::<f64>())
             .collect();
         let mut est = Stats::default();
         data.iter().for_each(|x| est.record(*x, 1.0));
@@ -286,8 +286,8 @@ mod test {
         const COUNT: usize = 10000;
         let mut rng = SmallRng::seed_from_u64(1);
         let mut data = Vec::new();
-        data.extend((0..COUNT / 2).map(|_| rng.gen::<f64>()));
-        data.extend((0..COUNT / 2).map(|_| rng.gen::<f64>() + 0.2));
+        data.extend((0..COUNT / 2).map(|_| rng.random::<f64>()));
+        data.extend((0..COUNT / 2).map(|_| rng.random::<f64>() + 0.2));
 
         let mut est = TimeSeriesStats::default();
         data.iter().for_each(|x| est.record(*x, 1.0));
