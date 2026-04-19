@@ -110,9 +110,13 @@ fn try_install(
 
     let err_module = init_error_module()?;
     let uuid_module = init_uuid_module()?;
-    let latte_module = init_latte_module(params)?;
+    let mut latte_module = init_latte_module(params)?;
     let mut fs_module = init_fs_module()?;
     let iter_module = init_iter_module(&mut fs_module)?;
+
+    latte_module.function_meta(functions::string_set)?;
+    latte_module.function_meta(functions::number_set)?;
+    latte_module.function_meta(functions::binary_set)?;
 
     rune_ctx.install(&context_module)?;
     rune_ctx.install(&err_module)?;

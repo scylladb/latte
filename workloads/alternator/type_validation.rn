@@ -32,6 +32,14 @@ pub async fn run(db, i) {
         // Binary "AttributeValue::B"
         test_bytes: b"binary data",
         
+        // Sets (AttributeValue::Ss, AttributeValue::Ns, AttributeValue::Bs)
+        test_string_set: string_set(["a", "b", "c"]),
+        test_number_set: number_set([1, 2, 3]),
+        test_bytes_set: binary_set([b"bar", b"foo"]),
+        manual_string_set: #{
+            __sset: ["x", "y", "z"]
+        },
+        
         // List "AttributeValue::L"
         test_list: [
             1, 
@@ -82,6 +90,18 @@ pub async fn run(db, i) {
     assert!(result["test_string"] == "Hello, World!");
 
     assert!(result["test_bytes"] ==  b"binary data");
+
+    // Validate set contents ignoring order
+    result["test_string_set"]["__sset"].sort();
+    result["test_number_set"]["__nset"].sort();
+    result["test_bytes_set"]["__bset"].sort();
+    result["manual_string_set"]["__sset"].sort();
+    assert!(result["test_string_set"] == string_set(["a", "b", "c"]));
+    assert!(result["test_number_set"] == number_set([1, 2, 3]));
+    assert!(result["test_bytes_set"] == binary_set([b"bar", b"foo"]));
+    assert!(result["manual_string_set"] == #{
+        __sset: ["x", "y", "z"]
+    });
 
     assert!(result["test_list"] == [
         1, 
