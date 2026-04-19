@@ -4,6 +4,56 @@ use rune::runtime::{Bytes, Object, Ref};
 use rune::{ToValue, Value};
 use std::collections::HashMap;
 
+pub const SSET_KEY: &str = "__sset";
+pub const NSET_KEY: &str = "__nset";
+pub const BSET_KEY: &str = "__bset";
+
+fn alternator_set_to_rune<I, T, F>(key: &str, iter: I, wrapper: F) -> Result<Value, AlternatorError>
+where
+    I: IntoIterator<Item = T>,
+    F: Fn(T) -> AttributeValue,
+{
+    let items = iter
+        .into_iter()
+        .map(|item| alternator_attribute_to_rune_value(wrapper(item)))
+        .collect::<Result<Vec<Value>, AlternatorError>>()?;
+
+    let mut map = HashMap::new();
+    map.insert(key.to_string(), items.to_value().into_result()?);
+    Ok(map.to_value().into_result()?)
+}
+
+fn rune_set_to_alternator<T, W, U>(
+    v: Value,
+    key: &str,
+    attribute_constructor: W,
+    rune_unwrapper: U,
+) -> Result<AttributeValue, AlternatorError>
+where
+    W: Fn(Vec<T>) -> AttributeValue,
+    U: Fn(AttributeValue) -> Option<T>,
+{
+    if let Value::Vec(vec) = v {
+        let items = vec
+            .into_ref()?
+            .iter()
+            .map(|item| {
+                rune_unwrapper(rune_value_to_alternator_attribute(item.clone())?).ok_or_else(|| {
+                    AlternatorError::new(AlternatorErrorKind::ConversionError(format!(
+                        "Invalid element type found in set {}: {:?}",
+                        key, item
+                    )))
+                })
+            })
+            .collect::<Result<Vec<T>, _>>()?;
+        Ok(attribute_constructor(items))
+    } else {
+        Err(AlternatorError::new(AlternatorErrorKind::ConversionError(
+            format!("Expected a vector of elements for {}", key),
+        )))
+    }
+}
+
 pub fn rune_value_to_alternator_attribute(v: Value) -> Result<AttributeValue, AlternatorError> {
     match v {
         Value::Bool(b) => Ok(AttributeValue::Bool(b)),
@@ -24,9 +74,50 @@ pub fn rune_value_to_alternator_attribute(v: Value) -> Result<AttributeValue, Al
                 .collect::<Result<_, _>>()?,
         )),
 
-        Value::Object(o) => Ok(AttributeValue::M(rune_object_to_alternator_map(
-            o.into_ref()?,
-        )?)),
+        Value::Object(o) => {
+            let obj = o.into_ref()?;
+
+            // Check for special Set representations.
+            // They have to be objects with exactly one key with special name, and the value has to be a vector of appropriate types.
+            if obj.len() == 1 {
+                let mut iter = obj.iter();
+                let (k, val) = iter.next().unwrap();
+
+                match k.as_str() {
+                    SSET_KEY => {
+                        return rune_set_to_alternator(val.clone(), k, AttributeValue::Ss, |a| {
+                            if let AttributeValue::S(s) = a {
+                                Some(s)
+                            } else {
+                                None
+                            }
+                        });
+                    }
+                    NSET_KEY => {
+                        return rune_set_to_alternator(val.clone(), k, AttributeValue::Ns, |a| {
+                            if let AttributeValue::N(n) = a {
+                                Some(n)
+                            } else {
+                                None
+                            }
+                        });
+                    }
+                    BSET_KEY => {
+                        return rune_set_to_alternator(val.clone(), k, AttributeValue::Bs, |a| {
+                            if let AttributeValue::B(b) = a {
+                                Some(b)
+                            } else {
+                                None
+                            }
+                        });
+                    }
+                    // Does not match any of the special set keys, so we treat it as a regular object.
+                    _ => {}
+                }
+            }
+
+            Ok(AttributeValue::M(rune_object_to_alternator_map(obj)?))
+        }
 
         Value::Option(o) => match o.into_ref()?.as_ref() {
             Some(v) => rune_value_to_alternator_attribute(v.clone()),
@@ -83,6 +174,10 @@ pub fn alternator_attribute_to_rune_value(attr: AttributeValue) -> Result<Value,
         AttributeValue::M(map) => Ok(alternator_map_to_rune_object(map)?),
 
         AttributeValue::Null(_) => Ok(None::<bool>.to_value().into_result()?),
+
+        AttributeValue::Ss(ss) => alternator_set_to_rune(SSET_KEY, ss, AttributeValue::S),
+        AttributeValue::Ns(ns) => alternator_set_to_rune(NSET_KEY, ns, AttributeValue::N),
+        AttributeValue::Bs(bs) => alternator_set_to_rune(BSET_KEY, bs, AttributeValue::B),
 
         _ => Err(AlternatorError::new(AlternatorErrorKind::ConversionError(
             format!("Unsupported Alternator AttributeValue type: {:?}", attr),
