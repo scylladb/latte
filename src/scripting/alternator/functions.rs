@@ -6,11 +6,12 @@ use crate::scripting::retry_error::handle_retry_error;
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
 use super::types::rune_object_to_alternator_map;
+use super::types::{BSET_KEY, NSET_KEY, SSET_KEY};
 use aws_sdk_dynamodb::client::Waiters;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, KeySchemaElement, KeyType, ScalarAttributeType,
 };
-use rune::runtime::{Object, Ref, Shared};
+use rune::runtime::{Object, Ref, Shared, VmResult};
 use rune::{ToValue, Value};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -567,4 +568,31 @@ pub async fn scan(
     }
 
     Ok(Value::EmptyTuple)
+}
+
+/// Marks a list of items as an Alternator string set.
+#[rune::function]
+pub fn string_set(items: Vec<Value>) -> VmResult<Value> {
+    let mut map = HashMap::new();
+    let items_val = rune::vm_try!(items.to_value());
+    map.insert(SSET_KEY.to_string(), items_val);
+    map.to_value()
+}
+
+/// Marks a list of items as an Alternator number set.
+#[rune::function]
+pub fn number_set(items: Vec<Value>) -> VmResult<Value> {
+    let mut map = HashMap::new();
+    let items_val = rune::vm_try!(items.to_value());
+    map.insert(NSET_KEY.to_string(), items_val);
+    map.to_value()
+}
+
+/// Marks a list of items as an Alternator binary set.
+#[rune::function]
+pub fn binary_set(items: Vec<Value>) -> VmResult<Value> {
+    let mut map = HashMap::new();
+    let items_val = rune::vm_try!(items.to_value());
+    map.insert(BSET_KEY.to_string(), items_val);
+    map.to_value()
 }
