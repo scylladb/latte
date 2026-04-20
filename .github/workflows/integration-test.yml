@@ -1,0 +1,93 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SCYLLADB_IMAGE_REGISTRY: "scylladb/scylla"
+  SCYLLADB_IMAGE_TAG: "2026.1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  integration-test:
+    name: Integration Test with ScyllaDB
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Start 3-node ScyllaDB cluster
+        run: |
+          sudo sysctl -w fs.aio-max-nr=1048576
+
+          log_resources() {
+            echo "=== Resources: $1 ==="
+            free -h
+            docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}" 2>/dev/null || true
+            echo "==="
+          }
+
+          wait_for_cql() {
+            local container="$1"
+            echo "Waiting for ${container} to be ready..."
+            for i in $(seq 1 60); do
+              if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+                echo "${container} is not running!"
+                docker logs "${container}"
+                return 1
+              fi
+              if docker exec "${container}" cqlsh -e "SELECT now() FROM system.local;" 2>/dev/null; then
+                echo "${container} ready after ${i} attempt(s)"
+                return 0
+              fi
+              if [ "$((i % 12))" -eq 0 ]; then
+                echo "${container} not ready after ${i} attempts, last 20 log lines:"
+                docker logs --tail 20 "${container}"
+              fi
+              if [ "$i" -eq 60 ]; then
+                echo "${container} failed to become ready"
+                docker logs "${container}"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          log_resources "before any containers"
+
+          docker run -d --name scylladb-node1 \
+            -p 9042:9042 \
+            ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
+            --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0
+          wait_for_cql scylladb-node1
+          log_resources "after scylladb-node1"
+
+          docker run -d --name scylladb-node2 \
+            ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
+            --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0 \
+            --seeds="$(docker inspect --format='{{ .NetworkSettings.Networks.bridge.IPAddress }}' scylladb-node1)"
+          wait_for_cql scylladb-node2
+          log_resources "after scylladb-node2"
+
+          docker run -d --name scylladb-node3 \
+            ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
+            --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0 \
+            --seeds="$(docker inspect --format='{{ .NetworkSettings.Networks.bridge.IPAddress }}' scylladb-node1)"
+          wait_for_cql scylladb-node3
+          log_resources "after scylladb-node3"
+
+      - name: Run integration test(s)
+        env:
+          SCYLLA_TEST_HOST: "127.0.0.1"
+          SCYLLA_TEST_PORT: "9042"
+        run: cargo test --test integration_test -- --ignored --nocapture
