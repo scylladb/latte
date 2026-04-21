@@ -1,10 +1,10 @@
 use cargo_lock::Lockfile;
 use chrono::{DateTime, Utc};
-use git2::Repository;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 const UNKNOWN: &str = "unknown";
 
@@ -125,13 +125,34 @@ mod driver_date_utils {
 }
 
 fn get_git_info() -> Option<(String, String)> {
-    let repo = Repository::open(".").ok()?;
-    let head = repo.head().ok()?;
-    let commit = head.peel_to_commit().ok()?;
-    let dt = DateTime::<Utc>::from_timestamp(commit.time().seconds(), 0)?;
+    let sha = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()?
+            .stdout,
+    )
+    .ok()?
+    .trim()
+    .to_string();
+    if sha.is_empty() {
+        return None;
+    }
+    let timestamp: i64 = String::from_utf8(
+        Command::new("git")
+            .args(["log", "-1", "--format=%ct"])
+            .output()
+            .ok()?
+            .stdout,
+    )
+    .ok()?
+    .trim()
+    .parse()
+    .ok()?;
+    let dt = DateTime::<Utc>::from_timestamp(timestamp, 0)?;
     Some((
         dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        commit.id().to_string(),
+        sha,
     ))
 }
 
