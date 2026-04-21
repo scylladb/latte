@@ -123,3 +123,8 @@ assets = [
     ["workloads/sai/orig/*.rn", "/usr/share/latte/workloads/sai/orig/", "644"],
     ["README.md", "usr/share/doc/latte/README", "644"],
 ]
+
+[patch.crates-io]
+# Replace vulnerable atty (CVE: potential unaligned read) with a safe stub
+# using std::io::IsTerminal (stable since Rust 1.70)
+atty = { path = "crates/atty-stub" }
