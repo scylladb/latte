@@ -7,6 +7,7 @@ use pin_project::pin_project;
 use status_line::StatusLine;
 use std::f64::consts;
 use std::future::ready;
+use std::io::IsTerminal;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -309,9 +310,11 @@ pub async fn par_execute(
         Interval::Time(duration) => Progress::with_duration(name.to_string(), duration),
         Interval::Unbounded => unreachable!(),
     };
+    let is_tty = std::io::stderr().is_terminal();
     let progress_opts = status_line::Options {
         initially_visible: show_progress,
-        ..Default::default()
+        refresh_period: Duration::from_millis(if is_tty { 100 } else { 1000 }),
+        enable_ansi_escapes: is_tty,
     };
     let progress = Arc::new(StatusLine::with_options(progress, progress_opts));
     let deadline = BoundedCycleCounter::new(exec_options.duration, exec_options.cycle_range);
