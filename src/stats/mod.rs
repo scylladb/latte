@@ -719,4 +719,91 @@ mod test {
         assert!(t_test(&mean1, &mean2) < 0.0011);
         assert!(t_test(&mean2, &mean1) < 0.0011);
     }
+
+    #[test]
+    fn t_test_missing_std_err() {
+        // Missing std_err on either side should return 1.0
+        let with_err = Mean {
+            n: 100,
+            value: 1.0,
+            std_err: Some(0.1),
+        };
+        let no_err = Mean {
+            n: 100,
+            value: 2.0,
+            std_err: None,
+        };
+        assert_eq!(t_test(&with_err, &no_err), 1.0);
+        assert_eq!(t_test(&no_err, &with_err), 1.0);
+        assert_eq!(t_test(&no_err, &no_err), 1.0);
+    }
+
+    #[test]
+    fn t_test_both_zero_std_err() {
+        // Both std_err = 0 with same value: t=0/0=NaN, freedom=NaN → should return 1.0
+        let mean1 = Mean {
+            n: 100,
+            value: 1.0,
+            std_err: Some(0.0),
+        };
+        let mean2 = Mean {
+            n: 100,
+            value: 1.0,
+            std_err: Some(0.0),
+        };
+        let result = t_test(&mean1, &mean2);
+        assert!(
+            (0.0..=1.0).contains(&result),
+            "t_test with zero errors should return a valid probability, got {result}"
+        );
+    }
+
+    #[test]
+    fn t_test_symmetry() {
+        // t_test(a, b) should equal t_test(b, a) regardless of which is larger
+        let mean1 = Mean {
+            n: 50,
+            value: 10.0,
+            std_err: Some(0.5),
+        };
+        let mean2 = Mean {
+            n: 200,
+            value: 11.0,
+            std_err: Some(0.3),
+        };
+        let p1 = t_test(&mean1, &mean2);
+        let p2 = t_test(&mean2, &mean1);
+        assert!(
+            (p1 - p2).abs() < 1e-12,
+            "t_test should be symmetric: {p1} != {p2}"
+        );
+    }
+
+    #[test]
+    fn t_test_result_in_valid_range() {
+        // p-value must always be in [0, 1]
+        let cases = vec![
+            (100, 1.0, 0.1, 100, 1.0, 0.1),             // identical
+            (100, 1.0, 0.1, 100, 100.0, 0.1),           // very different
+            (2, 1.0, 0.5, 2, 1.1, 0.5),                 // small n
+            (100000, 1.0, 0.001, 100000, 1.001, 0.001), // large n, tiny difference
+        ];
+        for (n1, v1, e1, n2, v2, e2) in cases {
+            let m1 = Mean {
+                n: n1,
+                value: v1,
+                std_err: Some(e1),
+            };
+            let m2 = Mean {
+                n: n2,
+                value: v2,
+                std_err: Some(e2),
+            };
+            let p = t_test(&m1, &m2);
+            assert!(
+                (0.0..=1.0).contains(&p),
+                "t_test result out of range [0,1]: {p} for n=({n1},{n2}), v=({v1},{v2}), e=({e1},{e2})"
+            );
+        }
+    }
 }
