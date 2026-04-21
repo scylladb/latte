@@ -10,7 +10,6 @@ use cpu_time::ProcessTime;
 use hdrhistogram::serialization::interval_log;
 use percentiles::Percentile;
 use serde::{Deserialize, Serialize};
-use statrs::distribution::{ContinuousCDF, StudentsT};
 use throughput::ThroughputMeter;
 use timeseries::TimeSeriesStats;
 
@@ -22,6 +21,120 @@ pub mod percentiles;
 pub mod session;
 pub mod throughput;
 pub mod timeseries;
+
+/// Computes the natural logarithm of the gamma function using the Lanczos approximation.
+/// See: https://en.wikipedia.org/wiki/Lanczos_approximation
+/// Coefficients from Numerical Recipes, 3rd edition, Section 6.1.
+fn ln_gamma(x: f64) -> f64 {
+    // Lanczos approximation coefficients (g=7, n=9)
+    #[allow(clippy::excessive_precision)]
+    const COEFFICIENTS: [f64; 9] = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    if x < 0.5 {
+        // Reflection formula: Γ(x)·Γ(1-x) = π/sin(πx)
+        std::f64::consts::PI.ln() - (std::f64::consts::PI * x).sin().ln() - ln_gamma(1.0 - x)
+    } else {
+        let y = x - 1.0;
+        let s = COEFFICIENTS[1..]
+            .iter()
+            .enumerate()
+            .fold(COEFFICIENTS[0], |acc, (i, &c)| {
+                acc + c / (y + i as f64 + 1.0)
+            });
+        let t = y + 7.5; // y + g + 0.5
+        0.5 * (2.0 * std::f64::consts::PI).ln() + (y + 0.5) * t.ln() - t + s.ln()
+    }
+}
+
+/// Computes the regularized incomplete beta function I_x(a, b)
+/// using the continued fraction representation (Lentz's algorithm).
+/// See: https://en.wikipedia.org/wiki/Beta_function#Incomplete_beta_function
+/// Algorithm from Numerical Recipes, 3rd edition, Section 6.4 ("betacf").
+fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    // For better convergence, use the symmetry relation when x > (a+1)/(a+b+2)
+    if x > (a + 1.0) / (a + b + 2.0) {
+        return 1.0 - regularized_incomplete_beta(1.0 - x, b, a);
+    }
+
+    let ln_prefix =
+        a * x.ln() + b * (1.0 - x).ln() - a.ln() - (ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b));
+    let prefix = ln_prefix.exp();
+
+    // Evaluate the continued fraction using the modified Lentz's method
+    const MAX_ITER: usize = 200;
+    const EPSILON: f64 = 1e-14;
+    const TINY: f64 = 1e-30;
+
+    let mut c = 1.0;
+    let mut d = 1.0 - (a + b) * x / (a + 1.0);
+    if d.abs() < TINY {
+        d = TINY;
+    }
+    d = 1.0 / d;
+    let mut result = d;
+
+    for m in 1..=MAX_ITER {
+        let m = m as f64;
+        // Even step: d_{2m}
+        let numerator = m * (b - m) * x / ((a + 2.0 * m - 1.0) * (a + 2.0 * m));
+        d = 1.0 + numerator * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + numerator / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        result *= d * c;
+
+        // Odd step: d_{2m+1}
+        let numerator = -(a + m) * (a + b + m) * x / ((a + 2.0 * m) * (a + 2.0 * m + 1.0));
+        d = 1.0 + numerator * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + numerator / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        let delta = d * c;
+        result *= delta;
+
+        if (delta - 1.0).abs() < EPSILON {
+            break;
+        }
+    }
+
+    prefix * result
+}
+
+/// Computes the CDF of the Student's t-distribution with `df` degrees of freedom.
+/// Uses the relationship: CDF(t, ν) = 1 - ½·I_x(ν/2, ½) where x = ν/(ν+t²).
+/// See: https://en.wikipedia.org/wiki/Student%27s_t-distribution#Cumulative_distribution_function
+fn students_t_cdf(t: f64, df: f64) -> f64 {
+    if df <= 0.0 || df.is_nan() || t.is_nan() {
+        return f64::NAN;
+    }
+    let x = df / (df + t * t);
+    0.5 * (1.0 + (1.0 - regularized_incomplete_beta(x, df / 2.0, 0.5)).copysign(t))
+}
 
 /// Holds a mean and its error together.
 /// Makes it more convenient to compare means, and it also reduces the number
@@ -72,8 +185,8 @@ pub fn t_test(mean1: &Mean, mean2: &Mean) -> f64 {
     let se = se_sq.sqrt();
     let t = (m1 - m2) / se;
     let freedom = se_sq * se_sq / (e1_sq * e1_sq / (n1 - 1.0) + e2_sq * e2_sq / (n2 - 1.0));
-    if let Ok(distrib) = StudentsT::new(0.0, 1.0, freedom) {
-        2.0 * (1.0 - distrib.cdf(t.abs()))
+    if freedom > 0.0 && freedom.is_finite() {
+        2.0 * (1.0 - students_t_cdf(t.abs(), freedom))
     } else {
         1.0
     }
@@ -484,7 +597,84 @@ impl Recorder<'_> {
 
 #[cfg(test)]
 mod test {
-    use crate::stats::{t_test, Mean};
+    use crate::stats::{ln_gamma, regularized_incomplete_beta, students_t_cdf, t_test, Mean};
+
+    #[test]
+    fn ln_gamma_known_values() {
+        // Γ(1) = 1, ln(1) = 0
+        assert!((ln_gamma(1.0)).abs() < 1e-12);
+        // Γ(2) = 1, ln(1) = 0
+        assert!((ln_gamma(2.0)).abs() < 1e-12);
+        // Γ(0.5) = √π
+        assert!((ln_gamma(0.5) - (std::f64::consts::PI.sqrt().ln())).abs() < 1e-10);
+        // Γ(5) = 24, ln(24) ≈ 3.1780538303
+        assert!((ln_gamma(5.0) - 24.0_f64.ln()).abs() < 1e-10);
+        // Γ(10) = 362880
+        assert!((ln_gamma(10.0) - 362880.0_f64.ln()).abs() < 1e-8);
+    }
+
+    #[test]
+    fn incomplete_beta_boundary_values() {
+        assert_eq!(regularized_incomplete_beta(0.0, 2.0, 3.0), 0.0);
+        assert_eq!(regularized_incomplete_beta(1.0, 2.0, 3.0), 1.0);
+    }
+
+    #[test]
+    fn incomplete_beta_symmetry() {
+        // I_x(a,b) = 1 - I_{1-x}(b,a)
+        let x = 0.3;
+        let a = 2.5;
+        let b = 3.5;
+        let lhs = regularized_incomplete_beta(x, a, b);
+        let rhs = 1.0 - regularized_incomplete_beta(1.0 - x, b, a);
+        assert!((lhs - rhs).abs() < 1e-12);
+    }
+
+    #[test]
+    fn incomplete_beta_known_values() {
+        // I_{0.5}(1, 1) = 0.5 (uniform distribution)
+        assert!((regularized_incomplete_beta(0.5, 1.0, 1.0) - 0.5).abs() < 1e-12);
+        // I_{0.5}(2, 2) = 0.5 (symmetric beta)
+        assert!((regularized_incomplete_beta(0.5, 2.0, 2.0) - 0.5).abs() < 1e-12);
+        // I_{0.5}(3, 3) = 0.5 (symmetric beta)
+        assert!((regularized_incomplete_beta(0.5, 3.0, 3.0) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn students_t_cdf_symmetry() {
+        // CDF(0, ν) = 0.5 for any ν
+        assert!((students_t_cdf(0.0, 1.0) - 0.5).abs() < 1e-12);
+        assert!((students_t_cdf(0.0, 10.0) - 0.5).abs() < 1e-12);
+        assert!((students_t_cdf(0.0, 100.0) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn students_t_cdf_antisymmetry() {
+        // CDF(-t, ν) = 1 - CDF(t, ν)
+        for &df in &[1.0, 5.0, 30.0, 100.0] {
+            for &t in &[0.5, 1.0, 2.0, 3.0] {
+                let sum = students_t_cdf(t, df) + students_t_cdf(-t, df);
+                assert!((sum - 1.0).abs() < 1e-12, "df={df}, t={t}, sum={sum}");
+            }
+        }
+    }
+
+    #[test]
+    fn students_t_cdf_known_values() {
+        // For df=1 (Cauchy distribution), CDF(1) = 0.75
+        assert!((students_t_cdf(1.0, 1.0) - 0.75).abs() < 1e-10);
+        // For large df, should approach standard normal CDF
+        // Normal CDF(1.96) ≈ 0.975
+        assert!((students_t_cdf(1.96, 1e6) - 0.975).abs() < 1e-3);
+    }
+
+    #[test]
+    fn students_t_cdf_invalid_inputs() {
+        assert!(students_t_cdf(1.0, 0.0).is_nan());
+        assert!(students_t_cdf(1.0, -1.0).is_nan());
+        assert!(students_t_cdf(f64::NAN, 5.0).is_nan());
+        assert!(students_t_cdf(1.0, f64::NAN).is_nan());
+    }
 
     #[test]
     fn t_test_same() {

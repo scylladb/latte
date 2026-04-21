@@ -150,10 +150,7 @@ fn get_git_info() -> Option<(String, String)> {
     .parse()
     .ok()?;
     let dt = DateTime::<Utc>::from_timestamp(timestamp, 0)?;
-    Some((
-        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        sha,
-    ))
+    Some((dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), sha))
 }
 
 fn print_version(out_dir: OsString, commit_date: String, sha: String, lockfile: Lockfile) {
