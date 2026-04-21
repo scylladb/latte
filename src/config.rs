@@ -17,6 +17,16 @@ use serde::{Deserialize, Serialize};
 /// Limit of retry errors to be kept and then printed in scope of a sampling interval
 pub const PRINT_RETRY_ERROR_LIMIT: u64 = 5;
 
+/// Parses a duration string. Supports humantime format (e.g. "5s", "1m 30s") and
+/// bare numbers which are interpreted as seconds for backward compatibility.
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s).or_else(|_| {
+        s.parse::<f64>()
+            .map(Duration::from_secs_f64)
+            .map_err(|e| e.to_string())
+    })
+}
+
 fn parse_f64(s: &str) -> Result<f64, String> {
     let parsed_value: f64 = s.parse().map_err(|_| format!("Invalid float: {s}"))?;
     if (0.0..=1.0).contains(&parsed_value) {
@@ -97,7 +107,7 @@ impl FromStr for Interval {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(i) = s.parse() {
             Ok(Interval::Count(i))
-        } else if let Ok(d) = parse_duration::parse(s) {
+        } else if let Ok(d) = parse_duration(s) {
             Ok(Interval::Time(d))
         } else {
             Err("Required integer number of cycles or time duration".to_string())
@@ -118,8 +128,10 @@ impl RetryInterval {
         if values.len() > 2 {
             return None;
         }
-        let min = parse_duration::parse(values.first().unwrap_or(&"")).ok()?;
-        let max = parse_duration::parse(values.get(1).unwrap_or(&"")).unwrap_or(min);
+        let min = parse_duration(values.first().unwrap_or(&"")).ok()?;
+        let max = parse_duration(values.get(1).unwrap_or(&""))
+            .ok()
+            .unwrap_or(min);
         if min > max {
             None
         } else {
@@ -215,7 +227,7 @@ pub struct ConnectionConf {
         long("request-timeout"),
         default_value = "5s",
         value_name = "DURATION",
-        value_parser = parse_duration::parse
+        value_parser = parse_duration
     )]
     pub request_timeout: Duration,
 
@@ -453,7 +465,7 @@ pub struct RateConf {
         aliases = &["sine-period"],
         default_value = "1m",
         value_name = "DURATION",
-        value_parser = parse_duration::parse,
+        value_parser = parse_duration,
     )]
     pub rate_sine_period: Duration,
 }
@@ -871,4 +883,140 @@ pub struct WorkloadConfig {
     pub run: HashMap<String, RunConfig>,
     #[serde(default)]
     pub bindings: HashMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod parse_duration_tests {
+        use super::*;
+
+        #[test]
+        fn humantime_seconds() {
+            assert_eq!(parse_duration("5s").unwrap(), Duration::from_secs(5));
+        }
+
+        #[test]
+        fn humantime_minutes() {
+            assert_eq!(parse_duration("3m").unwrap(), Duration::from_secs(180));
+        }
+
+        #[test]
+        fn humantime_milliseconds() {
+            assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+        }
+
+        #[test]
+        fn humantime_composite() {
+            assert_eq!(parse_duration("1m 30s").unwrap(), Duration::from_secs(90));
+        }
+
+        #[test]
+        fn bare_integer_as_seconds() {
+            assert_eq!(parse_duration("60").unwrap(), Duration::from_secs(60));
+        }
+
+        #[test]
+        fn bare_float_as_seconds() {
+            let d = parse_duration("1.5").unwrap();
+            assert_eq!(d, Duration::from_millis(1500));
+        }
+
+        #[test]
+        fn bare_zero() {
+            assert_eq!(parse_duration("0").unwrap(), Duration::from_secs(0));
+        }
+
+        #[test]
+        fn empty_string_is_error() {
+            assert!(parse_duration("").is_err());
+        }
+
+        #[test]
+        fn garbage_is_error() {
+            assert!(parse_duration("abc").is_err());
+        }
+
+        #[test]
+        fn fractional_with_unit() {
+            // humantime supports fractional values with units (e.g. "1.5s"),
+            // preserving backward compatibility with the old parse_duration crate.
+            assert_eq!(parse_duration("1.5s").unwrap(), Duration::from_millis(1500));
+        }
+    }
+
+    mod interval_tests {
+        use super::*;
+
+        #[test]
+        fn integer_parses_as_count() {
+            let interval: Interval = "1000".parse().unwrap();
+            assert_eq!(interval.count(), Some(1000));
+        }
+
+        #[test]
+        fn time_string_parses_as_time() {
+            let interval: Interval = "120m".parse().unwrap();
+            assert_eq!(interval.period(), Some(Duration::from_secs(7200)));
+        }
+
+        #[test]
+        fn seconds_suffix_parses_as_time() {
+            let interval: Interval = "5s".parse().unwrap();
+            assert_eq!(interval.period(), Some(Duration::from_secs(5)));
+        }
+
+        #[test]
+        fn invalid_string_is_error() {
+            assert!("abc".parse::<Interval>().is_err());
+        }
+    }
+
+    mod retry_interval_tests {
+        use super::*;
+
+        #[test]
+        fn min_and_max() {
+            let ri = RetryInterval::new("2s,10s").unwrap();
+            assert_eq!(ri.min, Duration::from_secs(2));
+            assert_eq!(ri.max, Duration::from_secs(10));
+        }
+
+        #[test]
+        fn milliseconds_and_seconds() {
+            let ri = RetryInterval::new("500ms,5s").unwrap();
+            assert_eq!(ri.min, Duration::from_millis(500));
+            assert_eq!(ri.max, Duration::from_secs(5));
+        }
+
+        #[test]
+        fn single_value_sets_min_equal_to_max() {
+            let ri = RetryInterval::new("5s").unwrap();
+            assert_eq!(ri.min, Duration::from_secs(5));
+            assert_eq!(ri.max, Duration::from_secs(5));
+        }
+
+        #[test]
+        fn bare_number_as_seconds() {
+            let ri = RetryInterval::new("60").unwrap();
+            assert_eq!(ri.min, Duration::from_secs(60));
+            assert_eq!(ri.max, Duration::from_secs(60));
+        }
+
+        #[test]
+        fn min_greater_than_max_returns_none() {
+            assert!(RetryInterval::new("10s,2s").is_none());
+        }
+
+        #[test]
+        fn too_many_values_returns_none() {
+            assert!(RetryInterval::new("1s,2s,3s").is_none());
+        }
+
+        #[test]
+        fn empty_string_returns_none() {
+            assert!(RetryInterval::new("").is_none());
+        }
+    }
 }
