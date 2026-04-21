@@ -3,7 +3,6 @@ use hdrhistogram::Histogram;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use statrs::statistics::Statistics;
 use strum::{EnumCount, EnumIter, IntoEnumIterator};
 
 #[allow(non_camel_case_types)]
@@ -110,7 +109,11 @@ impl Percentiles {
 
         let mut result = Vec::with_capacity(Percentile::COUNT);
         for p in Percentile::iter() {
-            let std_err = samples.iter().map(|s| s[p as usize]).std_dev();
+            let values: Vec<f64> = samples.iter().map(|s| s[p as usize]).collect();
+            let n = values.len() as f64;
+            let mean = values.iter().sum::<f64>() / n;
+            let variance = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+            let std_err = variance.sqrt();
             result.push(Mean {
                 n: Self::POPULATION_SIZE as u64,
                 value: histogram.value_at_percentile(p.value()) as f64 * scale,
