@@ -82,7 +82,7 @@ rstest = "0.22"
 # NOTE: pin the tokio version to be 1.44.2 to avoid newer versions with performance regression
 #       See: https://github.com/tokio-rs/tokio/issues/7744
 tokio = { version = "=1.44.2", features = ["rt", "test-util", "macros"] }
-testcontainers = "0.23"
+testcontainers = "0.25"
 
 [features]
 default = ["cql"]
