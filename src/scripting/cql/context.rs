@@ -6,7 +6,7 @@ use crate::scripting::cluster_info::ClusterInfo;
 use crate::scripting::retry_error::handle_retry_error;
 use crate::scripting::row_distribution::RowDistributionPreset;
 use crate::stats::session::SessionStats;
-use itertools::enumerate;
+
 use once_cell::sync::Lazy;
 use rand::prelude::ThreadRng;
 use regex::Regex;
@@ -778,7 +778,7 @@ impl Context {
         }
         let mut batch: Batch = Batch::new(BatchType::Logged);
         let mut batch_values: Vec<Vec<Option<CqlValue>>> = vec![];
-        for (i, key) in enumerate(keys) {
+        for (i, key) in keys.into_iter().enumerate() {
             let statement = self.statements.get(key).ok_or_else(|| {
                 CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
             })?;

@@ -77,7 +77,7 @@ user-defined data structures, objects, enums, constants, macros and many more.
 ## From source
 
 1. [Install Rust toolchain](https://rustup.rs/)
-2. Run `RUSTFLAGS="--cfg fetch_extended_version_info" cargo install --path .`
+2. Run `RUSTFLAGS="--cfg fetch_extended_version_info --cfg tokio_unstable" cargo install --path .`
 
 ## From release binaries
 
