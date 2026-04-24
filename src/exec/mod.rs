@@ -1,7 +1,7 @@
 //! Implementation of the main benchmarking loop
 
 use futures::channel::mpsc::{channel, Receiver, Sender};
-use futures::{pin_mut, SinkExt, Stream, StreamExt};
+use futures::{pin_mut, Future, SinkExt, Stream, StreamExt};
 use itertools::Itertools;
 use pin_project::pin_project;
 use status_line::StatusLine;
@@ -64,7 +64,10 @@ impl Iterator for InfiniteSinusoidalIterator {
 struct SinusoidalIntervalStream {
     tick_iterator: InfiniteSinusoidalIterator,
     next_expected_tick: Instant,
+    sleep: Pin<Box<tokio::time::Sleep>>,
 }
+
+impl Unpin for SinusoidalIntervalStream {}
 
 impl SinusoidalIntervalStream {
     fn new(rate: f64, amplitude: f64, frequency: f64) -> Self {
@@ -74,6 +77,7 @@ impl SinusoidalIntervalStream {
         Self {
             tick_iterator,
             next_expected_tick: now + initial_duration,
+            sleep: Box::pin(tokio::time::sleep(initial_duration)),
         }
     }
 
@@ -104,13 +108,12 @@ impl Stream for SinusoidalIntervalStream {
                 self.next_expected_tick = next_tick;
                 Poll::Ready(Some(current_expected_tick))
             } else {
-                // NOTE: If we are ahead, sleep for the remaining duration
+                // NOTE: Reuse the pinned Sleep timer instead of spawning a new task per tick
                 let sleep_duration = self.next_expected_tick - now;
-                let waker = cx.waker().clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(sleep_duration).await;
-                    waker.wake();
-                });
+                self.sleep
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + sleep_duration);
+                let _ = self.sleep.as_mut().poll(cx);
                 Poll::Pending
             }
         }
@@ -406,5 +409,123 @@ mod test {
     async fn test_terminate() {
         let s = stream::iter(vec![Ok(1), Ok(2), Err(3), Ok(4), Err(5)]).terminate_after_error();
         assert_eq!(s.collect::<Vec<_>>().await, vec![Ok(1), Ok(2), Err(3)])
+    }
+
+    mod sinusoidal_interval_stream_test {
+        use crate::exec::SinusoidalIntervalStream;
+        use futures::StreamExt;
+        use std::time::{Duration, Instant};
+
+        /// The stream must emit ticks at approximately the requested rate.
+        #[tokio::test]
+        async fn emits_ticks_at_expected_rate() {
+            let rate = 5000.0; // 5000 ops/sec → 0.2ms per tick
+            let mut stream = SinusoidalIntervalStream::new(rate, 0.0, 0.0);
+            let mut count = 0u32;
+            let run_for = Duration::from_millis(50);
+            let deadline = Instant::now() + run_for;
+            while Instant::now() < deadline {
+                tokio::select! {
+                    biased;
+                    Some(_) = stream.next() => { count += 1; }
+                    _ = tokio::time::sleep(run_for) => { break; }
+                }
+            }
+            // At 5000 Hz over 50ms, expect ~250 ticks. Wide tolerance for CI.
+            assert!(
+                (150..=350).contains(&count),
+                "expected ~250 ticks at 5000 Hz over 50ms, got {count}"
+            );
+        }
+
+        /// The waker must be properly registered via Sleep::poll(cx) so that
+        /// the executor wakes the task when the timer fires. If the waker
+        /// were not registered, the stream would hang forever.
+        #[tokio::test]
+        async fn waker_is_registered_correctly() {
+            let mut stream = SinusoidalIntervalStream::new(1000.0, 0.0, 0.0);
+            let tick = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+            assert!(
+                tick.is_ok() && tick.unwrap().is_some(),
+                "stream should emit a tick — waker may not be registered"
+            );
+        }
+
+        /// When the consumer is slower than the producer, accumulated ticks
+        /// must be emitted rapidly without sleeping (catch-up behavior).
+        #[tokio::test]
+        async fn catches_up_after_delay() {
+            let rate = 2000.0; // 0.5ms per tick
+            let mut stream = SinusoidalIntervalStream::new(rate, 0.0, 0.0);
+            // Consume first tick
+            let _ = stream.next().await;
+            // Simulate a slow consumer: sleep 10ms → ~20 ticks accumulate
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            // Rapidly consume — catch-up ticks should arrive without delay
+            let start = Instant::now();
+            let mut catchup = 0u32;
+            for _ in 0..30 {
+                tokio::select! {
+                    biased;
+                    Some(_) = stream.next() => { catchup += 1; }
+                    _ = tokio::time::sleep(Duration::from_millis(2)) => { break; }
+                }
+            }
+            let elapsed = start.elapsed();
+            assert!(
+                catchup >= 10,
+                "expected at least 10 catch-up ticks after 10ms pause at 2kHz, got {catchup}"
+            );
+            // The burst should arrive much faster than the nominal rate
+            assert!(
+                elapsed < Duration::from_millis(8),
+                "catch-up took {elapsed:?}, expected near-instant"
+            );
+        }
+
+        /// With zero amplitude, consecutive ticks should be uniformly spaced.
+        #[tokio::test]
+        async fn constant_rate_produces_uniform_ticks() {
+            let rate = 2000.0; // 0.5ms per tick
+            let mut stream = SinusoidalIntervalStream::new(rate, 0.0, 0.0);
+            let mut timestamps = Vec::new();
+            for _ in 0..20 {
+                if let Some(tick_time) = stream.next().await {
+                    timestamps.push(tick_time);
+                }
+            }
+            let expected = Duration::from_micros(500);
+            for pair in timestamps.windows(2) {
+                let interval = pair[1].duration_since(pair[0]);
+                let diff = interval.abs_diff(expected);
+                assert!(
+                    diff < Duration::from_micros(200),
+                    "tick interval {interval:?} deviates too much from expected {expected:?}"
+                );
+            }
+        }
+
+        /// With sinusoidal amplitude, tick intervals should visibly vary.
+        #[tokio::test]
+        async fn sinusoidal_amplitude_varies_tick_rate() {
+            // rate=1000, amplitude=500 → oscillates between 500 and 1500 Hz
+            let mut stream = SinusoidalIntervalStream::new(1000.0, 500.0, 2.0);
+            let mut timestamps = Vec::new();
+            for _ in 0..50 {
+                if let Some(t) = stream.next().await {
+                    timestamps.push(t);
+                }
+            }
+            let intervals: Vec<Duration> = timestamps
+                .windows(2)
+                .map(|w| w[1].duration_since(w[0]))
+                .collect();
+            let min = intervals.iter().min().unwrap();
+            let max = intervals.iter().max().unwrap();
+            assert!(
+                *max > *min + Duration::from_micros(100),
+                "expected varying tick intervals with amplitude, but min={min:?} max={max:?}"
+            );
+        }
     }
 }
