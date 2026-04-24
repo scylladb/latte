@@ -1,4 +1,3 @@
-use itertools::enumerate;
 use rune::runtime::{Mut, Ref};
 use rune::Any;
 use std::collections::HashMap;
@@ -101,7 +100,7 @@ impl RowDistributionPreset {
         if row_distributions.is_empty() {
             panic!("No row_distributions found, cannot proceed");
         }
-        for (loop_i, current_partn) in enumerate(partition_groups) {
+        for (loop_i, current_partn) in partition_groups.into_iter().enumerate() {
             let current_partn_count = current_partn.n_partitions;
 
             let current_row_distribution = row_distributions[loop_i].clone();
@@ -341,7 +340,7 @@ async fn _init_partition_row_distribution_preset(
     if row_count_diff > 0 {
         partn_count += 1;
         let mut same_size_exists = false;
-        for (i, partition) in enumerate(partitions.clone()) {
+        for (i, partition) in partitions.clone().into_iter().enumerate() {
             if partition.2 == row_count_diff {
                 partitions[i].1 += 1;
                 same_size_exists = true;

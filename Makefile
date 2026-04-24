@@ -12,7 +12,7 @@ check:
 
 .PHONY: clippy
 clippy:
-	RUSTFLAGS=-Dwarnings cargo clippy --all-targets
+	RUSTFLAGS="-Dwarnings --cfg tokio_unstable" cargo clippy --all-targets
 
 .PHONY: test
 test:
@@ -36,7 +36,7 @@ check-alternator:
 
 .PHONY: clippy-alternator
 clippy-alternator:
-	RUSTFLAGS=-Dwarnings cargo clippy --all-targets --no-default-features --features alternator
+	RUSTFLAGS="-Dwarnings --cfg tokio_unstable" cargo clippy --all-targets --no-default-features --features alternator
 
 .PHONY: test-alternator
 test-alternator:

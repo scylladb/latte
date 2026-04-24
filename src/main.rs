@@ -591,6 +591,7 @@ fn init_runtime(thread_count: usize) -> std::io::Result<Runtime> {
         Builder::new_multi_thread()
             .worker_threads(thread_count)
             .enable_all()
+            .enable_alt_timer()
             .build()
     }
 }

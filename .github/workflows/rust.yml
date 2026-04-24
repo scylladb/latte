@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "--cfg tokio_unstable"
 
 jobs:
   check:
@@ -60,5 +61,5 @@ jobs:
           components: rustfmt, clippy
           cache: true
       - run: cargo clippy -- -D warnings
-      - run: RUSTFLAGS="--cfg fetch_extended_version_info" cargo clippy -- -D warnings
+      - run: RUSTFLAGS="--cfg tokio_unstable --cfg fetch_extended_version_info" cargo clippy -- -D warnings
       - run: cargo clippy --no-default-features --features alternator -- -D warnings

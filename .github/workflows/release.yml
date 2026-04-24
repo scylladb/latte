@@ -9,7 +9,7 @@ on:
       - '*'
 
 env:
-  RUSTFLAGS: "--cfg fetch_extended_version_info"
+  RUSTFLAGS: "--cfg fetch_extended_version_info --cfg tokio_unstable"
 
 jobs:
   get_tag:
