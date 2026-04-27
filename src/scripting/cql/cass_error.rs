@@ -2,12 +2,12 @@ use openssl::error::ErrorStack;
 use rune::alloc::error::Error as RuneAllocError;
 use rune::alloc::fmt::TryWrite;
 use rune::runtime::{TypeInfo, VmResult};
-use rune::{vm_write, Any};
+use rune::{vm_write, Any, Value};
 use scylla::errors::{
     DeserializationError, ExecutionError, NewSessionError, PrepareError, RowsError,
 };
 use scylla::response::query_result::{FirstRowError, IntoRowsResultError};
-use scylla::value::{CqlValue, ValueOverflow};
+use scylla::value::ValueOverflow;
 use std::fmt::{Display, Formatter};
 
 #[derive(Any, Debug)]
@@ -24,15 +24,12 @@ impl CassError {
 
     pub fn query_execution_error(
         cql: &str,
-        params: &[Option<CqlValue>],
+        params: Option<&Value>,
         err: ExecutionError,
     ) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
-            params: params
-                .iter()
-                .map(|v| cql_value_obj_to_string(v.as_ref()))
-                .collect(),
+            params: rune_value_to_param_strings(params),
         };
         let kind = match err {
             ExecutionError::RequestTimeout(_) => CassErrorKind::Overloaded(query, err),
@@ -43,7 +40,7 @@ impl CassError {
 
     pub fn query_validation_error(
         cql: &str,
-        params: &[Option<CqlValue>],
+        params: Option<&Value>,
         expected_rows_num_min: u64,
         expected_rows_num_max: u64,
         actual_rows_num: u64,
@@ -51,10 +48,7 @@ impl CassError {
     ) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
-            params: params
-                .iter()
-                .map(|v| cql_value_obj_to_string(v.as_ref()))
-                .collect(),
+            params: rune_value_to_param_strings(params),
         };
         CassError(CassErrorKind::QueryResponseValidationError(
             query,
@@ -67,14 +61,11 @@ impl CassError {
 
     pub fn query_response_validation_not_applicable_error(
         cql: &str,
-        params: &[Option<CqlValue>],
+        params: Option<&Value>,
     ) -> CassError {
         let query = QueryInfo {
             cql: cql.to_string(),
-            params: params
-                .iter()
-                .map(|v| cql_value_obj_to_string(v.as_ref()))
-                .collect(),
+            params: rune_value_to_param_strings(params),
         };
         CassError(CassErrorKind::QueryResponseValidationNotApplicableError(
             query,
@@ -287,81 +278,27 @@ impl From<std::num::TryFromIntError> for Box<CassError> {
 
 impl std::error::Error for CassError {}
 
-/// Transforms a CqlValue object to a string dedicated to be part of CassError message
-pub fn cql_value_obj_to_string(v: Option<&CqlValue>) -> String {
-    let no_transformation_size_limit = 32;
-    match v {
-        // Replace big string- and bytes-alike object values with its size labels
-        Some(CqlValue::Text(param)) if param.len() > no_transformation_size_limit => {
-            format!("Text(<size>={})", param.len())
-        }
-        Some(CqlValue::Ascii(param)) if param.len() > no_transformation_size_limit => {
-            format!("Ascii(<size>={})", param.len())
-        }
-        Some(CqlValue::Blob(param)) if param.len() > no_transformation_size_limit => {
-            format!("Blob(<size>={})", param.len())
-        }
-        Some(CqlValue::UserDefinedType {
-            name,
-            keyspace,
-            fields,
-        }) => {
-            let mut result =
-                format!("UDT {{ keyspace: \"{keyspace}\", type_name: \"{name}\", fields: [");
-            for (field_name, field_value) in fields {
-                let field_string = match field_value {
-                    Some(field) => cql_value_obj_to_string(Some(field)),
-                    None => String::from("None"),
-                };
-                result.push_str(&format!("(\"{field_name}\", {field_string}), "));
-            }
-            if result.len() >= 2 {
-                result.truncate(result.len() - 2);
-            }
-            result.push_str("] }");
-            result
-        }
-        Some(CqlValue::List(elements)) => {
-            let mut result = String::from("List([");
-            for element in elements {
-                let element_string = cql_value_obj_to_string(Some(element));
-                result.push_str(&element_string);
-                result.push_str(", ");
-            }
-            if result.len() >= 2 {
-                result.truncate(result.len() - 2);
-            }
-            result.push_str("])");
-            result
-        }
-        Some(CqlValue::Set(elements)) => {
-            let mut result = String::from("Set([");
-            for element in elements {
-                let element_string = cql_value_obj_to_string(Some(element));
-                result.push_str(&element_string);
-                result.push_str(", ");
-            }
-            if result.len() >= 2 {
-                result.truncate(result.len() - 2);
-            }
-            result.push_str("])");
-            result
-        }
-        Some(CqlValue::Map(pairs)) => {
-            let mut result = String::from("Map({");
-            for (key, value) in pairs {
-                let key_string = cql_value_obj_to_string(Some(key));
-                let value_string = cql_value_obj_to_string(Some(value));
-                result.push_str(&format!("({key_string}: {value_string}), "));
-            }
-            if result.len() >= 2 {
-                result.truncate(result.len() - 2);
-            }
-            result.push_str("})");
-            result
-        }
-        None => String::from("None"),
-        _ => format!("{v:?}"),
+/// Formats a rune Value into a list of parameter display strings for error messages
+fn rune_value_to_param_strings(value: Option<&Value>) -> Vec<String> {
+    match value {
+        None => vec![],
+        Some(Value::Tuple(tuple)) => match tuple.borrow_ref() {
+            Ok(tuple) => tuple.iter().map(|v| format!("{v:?}")).collect(),
+            Err(_) => vec!["<borrow error>".to_string()],
+        },
+        Some(Value::Vec(vec)) => match vec.borrow_ref() {
+            Ok(vec) => vec.iter().map(|v| format!("{v:?}")).collect(),
+            Err(_) => vec!["<borrow error>".to_string()],
+        },
+        Some(Value::Object(obj)) => match obj.borrow_ref() {
+            Ok(obj) => obj.iter().map(|(k, v)| format!("{k}: {v:?}")).collect(),
+            Err(_) => vec!["<borrow error>".to_string()],
+        },
+        Some(Value::Struct(obj)) => match obj.borrow_ref() {
+            Ok(obj) => vec![format!("{obj:?}")],
+            Err(_) => vec!["<borrow error>".to_string()],
+        },
+        Some(other) => vec![format!("{other:?}")],
     }
 }
 
