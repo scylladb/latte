@@ -1,0 +1,57 @@
+use std::future;                                                                                       
+use latte::*;                                                                                          
+                                                                                                       
+const ROW_COUNT = latte::param!("row_count", 1000000000);                                              
+const OFFSET = latte::param!("offset", 0);                                                             
+const REPLICATION_FACTOR = latte::param!("replication_factor", 3);                                     
+const KEYSPACE = latte::param!("keyspace", "latte");                                                   
+const TABLE = latte::param!("table", "simple");                                                        
+const TABLETS = latte::param!("tablets", true);                                                        
+                                                                                                       
+const P_STMT = #{                                                                                      
+    "INSERT": "p_stmt__write",                                                                         
+    "SELECT": "p_stmt__read",                                                                          
+};                                                                                                     
+                                                                                                       
+///////////////////////                                                                                
+// SPECIAL FUNCTIONS //                                                                                
+///////////////////////                                                                                
+                                                                                                       
+pub async fn schema(db) {                                                                              
+    db.execute(`                                                                                       
+        CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}                                                      
+        WITH REPLICATION = {'class': 'NetworkTopologyStrategy', 'replication_factor': ${REPLICATION_FACTOR}}
+        AND tablets = {'enabled': ${TABLETS}}                                                          
+    `).await?;                                                                                         
+    db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE} (key blob, val blob, PRIMARY KEY (key))`).await?;
+}                                                                                                      
+                                                                                                       
+pub async fn erase(db) {                                                                               
+    let errors = []; let futures = [];                                                                 
+    futures.push(db.execute(`TRUNCATE TABLE ${KEYSPACE}.${TABLE}`));                                   
+    for result in future::join(futures).await { match result { Err(e) => errors.push(e) } }            
+    if errors.len() < 1 { return Ok(()) }                                                              
+    Err(`Failed to execute 'erase' queries: ${errors.0}`)                                              
+}                                                                                                      
+                                                                                                       
+pub async fn prepare(db) {                                                                             
+    db.prepare(P_STMT.INSERT, `INSERT INTO ${KEYSPACE}.${TABLE}(key, val) VALUES (:key, :val)`).await?;
+    db.prepare(P_STMT.SELECT, `SELECT * FROM ${KEYSPACE}.${TABLE} WHERE key = :key`).await?;           
+}                                                                                                      
+                                                                                                       
+//////////////////////////////////                                                                     
+// SPECIFIC PER-TABLE FUNCTIONS //                                                                     
+//////////////////////////////////                                                                     
+                                                                                                       
+pub async fn write(db, i) {                                                                            
+    let idx = i % ROW_COUNT + OFFSET;                                                                  
+    let key = blob(idx, 10);                                                                           
+    let val = blob(idx+1000, 1024);                                                                    
+    db.execute_prepared(P_STMT.INSERT, [key, val]).await?                                              
+}                                                                                                      
+                                                                                                       
+pub async fn read(db, i) {                                                                             
+    let idx = i % ROW_COUNT + OFFSET;                                                                  
+    let key = blob(idx, 10);                                                                           
+    db.execute_prepared(P_STMT.SELECT, [key]).await?                                                   
+} 
