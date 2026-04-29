@@ -50,6 +50,9 @@ rune = "0.13"
 rust_decimal = "1.36"
 rust-embed = "8"
 scylla = { version = "1.6", features = ["openssl-010", "chrono-04"], optional = true }
+# Needed because Rust Driver doesn't reexport VectorIterator. After it starts reexporting it,
+# this dependency can be removed.
+scylla-cql = { version = "1.6", optional = true }
 search_path = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -85,7 +88,7 @@ testcontainers = "0.27"
 
 [features]
 default = ["cql"]
-cql = ["scylla"]
+cql = ["scylla", "scylla-cql"]
 alternator = ["aws-config", "aws-sdk-dynamodb"]
 
 [lints.rust]
