@@ -2217,6 +2217,7 @@ dependencies = [
  "rust-embed",
  "rust_decimal",
  "scylla",
+ "scylla-cql",
  "search_path",
  "serde",
  "serde_json",
