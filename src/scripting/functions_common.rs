@@ -55,31 +55,43 @@ pub struct ValidationArgs {
 ///  * [Integer, String] -> Exact number of expected rows and custom error message.
 ///  * [Integer, Integer, String] -> Range of expected rows and custom error message.
 pub fn extract_validation_args(validation_args: Vec<Value>) -> Result<ValidationArgs, String> {
+    let as_int = |v: &Value| v.as_signed().ok().map(|i| i as u64);
+    let as_str = |v: &Value| {
+        v.borrow_ref::<rune::alloc::String>()
+            .ok()
+            .map(|s| s.as_str().to_string())
+    };
     match validation_args.as_slice() {
         // (int): expected_rows
-        [Value::Integer(expected_rows)] => Ok(ValidationArgs {
-            expected_min: *expected_rows as u64,
-            expected_max: *expected_rows as u64,
-            custom_err_msg: String::new(),
-        }),
+        [a] if as_int(a).is_some() => {
+            let n = as_int(a).unwrap();
+            Ok(ValidationArgs {
+                expected_min: n,
+                expected_max: n,
+                custom_err_msg: String::new(),
+            })
+        }
         // (int, int): expected_rows_num_min, expected_rows_num_max
-        [Value::Integer(min), Value::Integer(max)] => Ok(ValidationArgs {
-            expected_min: *min as u64,
-            expected_max: *max as u64,
+        [a, b] if as_int(a).is_some() && as_int(b).is_some() => Ok(ValidationArgs {
+            expected_min: as_int(a).unwrap(),
+            expected_max: as_int(b).unwrap(),
             custom_err_msg: String::new(),
         }),
         // (int, str): expected_rows, custom_err_msg
-        [Value::Integer(expected_rows), Value::String(custom_err_msg)] => Ok(ValidationArgs {
-            expected_min: *expected_rows as u64,
-            expected_max: *expected_rows as u64,
-            custom_err_msg: custom_err_msg.borrow_ref().unwrap().to_string(),
-        }),
-        // (int, int, str): expected_rows_num_min, expected_rows_num_max, custom_err_msg
-        [Value::Integer(min), Value::Integer(max), Value::String(custom_err_msg)] => {
+        [a, b] if as_int(a).is_some() && as_str(b).is_some() => {
+            let n = as_int(a).unwrap();
             Ok(ValidationArgs {
-                expected_min: *min as u64,
-                expected_max: *max as u64,
-                custom_err_msg: custom_err_msg.borrow_ref().unwrap().to_string(),
+                expected_min: n,
+                expected_max: n,
+                custom_err_msg: as_str(b).unwrap(),
+            })
+        }
+        // (int, int, str): expected_rows_num_min, expected_rows_num_max, custom_err_msg
+        [a, b, c] if as_int(a).is_some() && as_int(b).is_some() && as_str(c).is_some() => {
+            Ok(ValidationArgs {
+                expected_min: as_int(a).unwrap(),
+                expected_max: as_int(b).unwrap(),
+                custom_err_msg: as_str(c).unwrap(),
             })
         }
         _ => Err("Invalid validation arguments".to_string()),
@@ -211,7 +223,7 @@ pub fn join(collection: &[Value], separator: &str) -> VmResult<String> {
         if !first {
             result.push_str(separator);
         }
-        result.push_str(vm_try!(v.borrow_ref()).as_str());
+        result.push_str(v.as_str());
         first = false;
     }
     VmResult::Ok(result)
@@ -225,10 +237,8 @@ pub fn is_none(input: Value) -> bool {
     // With this function it is possible to check for None the following way:
     //   let result = if is_none(row.some_col) { "None" } else { row.some_col };
     //   println!("DEBUG: value for some_col is '{result}'", result=result);
-    if let Value::Option(option) = input {
-        if let Ok(borrowed) = option.borrow_ref() {
-            return borrowed.is_none();
-        }
+    if let Ok(opt) = input.borrow_ref::<Option<Value>>() {
+        return opt.is_none();
     }
     false
 }

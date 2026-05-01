@@ -32,9 +32,9 @@ impl AlternatorError {
         )))
     }
 
-    #[rune::function(protocol = STRING_DISPLAY)]
+    #[rune::function(protocol = DISPLAY_FMT)]
     pub fn string_display(&self, f: &mut rune::runtime::Formatter) -> VmResult<()> {
-        vm_write!(f, "{}", self.to_string());
+        let _ = vm_write!(f, "{}", self.to_string());
         VmResult::Ok(())
     }
 }
@@ -93,6 +93,12 @@ where
 
 impl From<VmError> for AlternatorError {
     fn from(error: VmError) -> Self {
+        AlternatorError::new(AlternatorErrorKind::ConversionError(error.to_string()))
+    }
+}
+
+impl From<rune::runtime::RuntimeError> for AlternatorError {
+    fn from(error: rune::runtime::RuntimeError) -> Self {
         AlternatorError::new(AlternatorErrorKind::ConversionError(error.to_string()))
     }
 }

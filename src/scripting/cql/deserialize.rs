@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use super::cass_error::{CassError, CassErrorKind};
 
 use rune::alloc::String as RuneString;
-use rune::runtime::{Object, OwnedTuple, Shared, Vec as RuneVec};
+use rune::runtime::{Object, OwnedTuple, Vec as RuneVec};
 use rune::Value;
 use scylla::cluster::metadata::{CollectionType, ColumnType, NativeType};
 use scylla::deserialize::row::{ColumnIterator, DeserializeRow};
@@ -34,13 +34,9 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
         v: Option<scylla::deserialize::FrameSlice<'frame>>,
     ) -> Result<Self, DeserializationError> {
         let Some(slice) = v else {
-            return Ok(RuneValue(Value::Option(Shared::new(None).map_err(
-                |_| {
-                    DeserializationError::new(CassError(CassErrorKind::Error(
-                        "Failed to create shared None".to_string(),
-                    )))
-                },
-            )?)));
+            return Ok(RuneValue(
+                Value::try_from(None::<Value>).map_err(DeserializationError::new)?,
+            ));
         };
 
         // This matches the old logic that used CqlValue
@@ -52,13 +48,9 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                     // can't be empty
                 }
                 _ => {
-                    return Ok(RuneValue(Value::Option(Shared::new(None).map_err(
-                        |_| {
-                            DeserializationError::new(CassError(CassErrorKind::Error(
-                                "Failed to create shared None".to_string(),
-                            )))
-                        },
-                    )?)))
+                    return Ok(RuneValue(
+                        Value::try_from(None::<Value>).map_err(DeserializationError::new)?,
+                    ));
                 }
             }
         }
@@ -67,58 +59,56 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
             ColumnType::Native(NativeType::Ascii) | ColumnType::Native(NativeType::Text) => {
                 let string =
                     <String as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))?;
-                Value::String(
-                    Shared::new(RuneString::try_from(string).expect("Failed to create RuneString"))
-                        .map_err(|_| {
-                            DeserializationError::new(CassError(CassErrorKind::Error(
-                                "Failed to create shared string".to_string(),
-                            )))
-                        })?,
-                )
+                Value::new(RuneString::try_from(string).expect("Failed to create RuneString"))
+                    .map_err(|_| {
+                        DeserializationError::new(CassError(CassErrorKind::Error(
+                            "Failed to create string value".to_string(),
+                        )))
+                    })?
             }
             ColumnType::Native(NativeType::Boolean) => {
                 <bool as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(Value::Bool)?
+                    .map(Value::from)?
             }
             ColumnType::Native(NativeType::TinyInt) => {
                 <i8 as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|i| Value::Integer(i.into()))?
+                    .map(|i| Value::from(i as i64))?
             }
             ColumnType::Native(NativeType::SmallInt) => {
                 <i16 as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|i| Value::Integer(i.into()))?
+                    .map(|i| Value::from(i as i64))?
             }
             ColumnType::Native(NativeType::Int) => {
                 <i32 as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|i| Value::Integer(i.into()))?
+                    .map(|i| Value::from(i as i64))?
             }
             ColumnType::Native(NativeType::BigInt) => {
                 <i64 as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(Value::Integer)?
+                    .map(Value::from)?
             }
             ColumnType::Native(NativeType::Float) => {
                 <f32 as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|i| Value::Float(i.into()))?
+                    .map(|f| Value::from(f as f64))?
             }
             ColumnType::Native(NativeType::Double) => {
                 <f64 as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(Value::Float)?
+                    .map(Value::from)?
             }
             ColumnType::Native(NativeType::Counter) => {
                 <Counter as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|c| Value::Integer(c.0))?
+                    .map(|c| Value::from(c.0))?
             }
             ColumnType::Native(NativeType::Timestamp) => {
                 <CqlTimestamp as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|ts| Value::Integer(ts.0))?
+                    .map(|ts| Value::from(ts.0))?
             }
             ColumnType::Native(NativeType::Date) => {
                 <CqlDate as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|date| Value::Integer(date.0.into()))?
+                    .map(|date| Value::from(date.0 as i64))?
             }
             ColumnType::Native(NativeType::Time) => {
                 <CqlTime as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))
-                    .map(|time| Value::Integer(time.0))?
+                    .map(|time| Value::from(time.0))?
             }
             ColumnType::Native(NativeType::Blob) => {
                 // Note: is it intentional that blobs are representes as Vec of rune Bytes?
@@ -130,64 +120,58 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                     )?;
                 let mut rune_vec = RuneVec::new();
                 for byte in bytes_slice {
-                    rune_vec.push(Value::Byte(*byte)).map_err(|_| {
+                    rune_vec.push(Value::from(*byte)).map_err(|_| {
                         DeserializationError::new(CassError(CassErrorKind::Error(
                             "Failed to push byte to Rune vector".to_string(),
                         )))
                     })?;
                 }
-                Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Value::vec(rune_vec.into_inner()).map_err(|_| {
                     DeserializationError::new(CassError(CassErrorKind::Error(
-                        "Failed to create shared vector for blob".to_string(),
+                        "Failed to create vector for blob".to_string(),
                     )))
-                })?)
+                })?
             }
             ColumnType::Native(NativeType::Uuid) => {
                 let uuid =
                     <Uuid as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))?;
-                Value::String(
-                    Shared::new(
-                        RuneString::try_from(uuid.to_string())
-                            .expect("Failed to create RuneString for UUID"),
-                    )
-                    .map_err(|_| {
-                        DeserializationError::new(CassError(CassErrorKind::Error(
-                            "Failed to create shared string for UUID".to_string(),
-                        )))
-                    })?,
+                Value::new(
+                    RuneString::try_from(uuid.to_string())
+                        .expect("Failed to create RuneString for UUID"),
                 )
+                .map_err(|_| {
+                    DeserializationError::new(CassError(CassErrorKind::Error(
+                        "Failed to create string value for UUID".to_string(),
+                    )))
+                })?
             }
             ColumnType::Native(NativeType::Timeuuid) => {
                 let timeuuid = <CqlTimeuuid as DeserializeValue<'frame, 'metadata>>::deserialize(
                     typ,
                     Some(slice),
                 )?;
-                Value::String(
-                    Shared::new(
-                        RuneString::try_from(timeuuid.to_string())
-                            .expect("Failed to create RuneString for TimeUuid"),
-                    )
-                    .map_err(|_| {
-                        DeserializationError::new(CassError(CassErrorKind::Error(
-                            "Failed to create shared string for TimeUuid".to_string(),
-                        )))
-                    })?,
+                Value::new(
+                    RuneString::try_from(timeuuid.to_string())
+                        .expect("Failed to create RuneString for TimeUuid"),
                 )
+                .map_err(|_| {
+                    DeserializationError::new(CassError(CassErrorKind::Error(
+                        "Failed to create string value for TimeUuid".to_string(),
+                    )))
+                })?
             }
             ColumnType::Native(NativeType::Inet) => {
                 let addr =
                     <IpAddr as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))?;
-                Value::String(
-                    Shared::new(
-                        RuneString::try_from(addr.to_string())
-                            .expect("Failed to create RuneString for IpAddr"),
-                    )
-                    .map_err(|_| {
-                        DeserializationError::new(CassError(CassErrorKind::Error(
-                            "Failed to create shared string for IpAddr".to_string(),
-                        )))
-                    })?,
+                Value::new(
+                    RuneString::try_from(addr.to_string())
+                        .expect("Failed to create RuneString for IpAddr"),
                 )
+                .map_err(|_| {
+                    DeserializationError::new(CassError(CassErrorKind::Error(
+                        "Failed to create string value for IpAddr".to_string(),
+                    )))
+                })?
             }
             ColumnType::Native(NativeType::Varint) => {
                 let varint = <CqlVarintBorrowed<'frame> as DeserializeValue<'frame, 'metadata>>::deserialize(typ, Some(slice))?;
@@ -205,7 +189,7 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                     padded[8 - varint_bytes.len()..].copy_from_slice(varint_bytes);
                     i64::from_be_bytes(padded)
                 };
-                Value::Integer(integer)
+                Value::from(integer)
             }
             ColumnType::Native(NativeType::Decimal) => {
                 let decimal = <CqlDecimalBorrowed<'frame> as DeserializeValue<
@@ -228,16 +212,14 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                     u32::try_from(scale).map_err(DeserializationError::new)?,
                 )
                 .unwrap();
-                Value::String(
-                    Shared::new(
-                        RuneString::try_from(dec.to_string()).expect("Failed to create RuneString"),
-                    )
-                    .map_err(|_| {
-                        DeserializationError::new(CassError(CassErrorKind::Error(
-                            "Failed to create shared string for Decimal".to_string(),
-                        )))
-                    })?,
+                Value::new(
+                    RuneString::try_from(dec.to_string()).expect("Failed to create RuneString"),
                 )
+                .map_err(|_| {
+                    DeserializationError::new(CassError(CassErrorKind::Error(
+                        "Failed to create string value for Decimal".to_string(),
+                    )))
+                })?
             }
             ColumnType::Native(NativeType::Duration) => {
                 let duration = <CqlDuration as DeserializeValue<'frame, 'metadata>>::deserialize(
@@ -249,7 +231,7 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                 rune_obj
                     .insert(
                         RuneString::try_from("months").expect("Failed to create RuneString"),
-                        Value::Integer(duration.months as i64),
+                        Value::from(duration.months as i64),
                     )
                     .map_err(|_| {
                         DeserializationError::new(CassError(CassErrorKind::Error(
@@ -259,7 +241,7 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                 rune_obj
                     .insert(
                         RuneString::try_from("days").expect("Failed to create RuneString"),
-                        Value::Integer(duration.days as i64),
+                        Value::from(duration.days as i64),
                     )
                     .map_err(|_| {
                         DeserializationError::new(CassError(CassErrorKind::Error(
@@ -269,18 +251,18 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                 rune_obj
                     .insert(
                         RuneString::try_from("nanoseconds").expect("Failed to create RuneString"),
-                        Value::Integer(duration.nanoseconds),
+                        Value::from(duration.nanoseconds),
                     )
                     .map_err(|_| {
                         DeserializationError::new(CassError(CassErrorKind::Error(
                             "Failed to insert nanoseconds into duration object".to_string(),
                         )))
                     })?;
-                Value::Object(Shared::new(rune_obj).map_err(|_| {
+                Value::new(rune_obj).map_err(|_| {
                     DeserializationError::new(CassError(CassErrorKind::Error(
-                        "Failed to create shared object for Duration".to_string(),
+                        "Failed to create object value for Duration".to_string(),
                     )))
-                })?)
+                })?
             }
             ColumnType::Vector { dimensions, .. } => {
                 let mut rune_vec =
@@ -298,11 +280,11 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                         )))
                     })?;
                 }
-                Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Value::vec(rune_vec.into_inner()).map_err(|_| {
                     DeserializationError::new(CassError(CassErrorKind::Error(
-                        "Failed to create shared vector".to_string(),
+                        "Failed to create vector value".to_string(),
                     )))
-                })?)
+                })?
             }
             ColumnType::Collection { typ: coll_type, .. } => match coll_type {
                 CollectionType::List(_) | CollectionType::Set(_) => {
@@ -321,11 +303,11 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                             )))
                         })?;
                     }
-                    Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                    Value::vec(rune_vec.into_inner()).map_err(|_| {
                         DeserializationError::new(CassError(CassErrorKind::Error(
-                            "Failed to create shared vector".to_string(),
+                            "Failed to create vector value".to_string(),
                         )))
-                    })?)
+                    })?
                 }
                 CollectionType::Map(_, _) => {
                     let cql_map_iterator = <MapIterator<'frame, 'metadata, RuneValue, RuneValue> as DeserializeValue<
@@ -342,22 +324,22 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                                 "Failed to create Rune OwnedTuple".to_string(),
                             )))
                         })?;
-                        let tuple = Value::Tuple(Shared::new(owned_tuple).map_err(|_| {
+                        let tuple = Value::new(owned_tuple).map_err(|_| {
                             DeserializationError::new(CassError(CassErrorKind::Error(
-                                "Failed to create Rune Shared".to_string(),
+                                "Failed to create Rune tuple value".to_string(),
                             )))
-                        })?);
+                        })?;
                         rune_vec.push(tuple).map_err(|_| {
                             DeserializationError::new(CassError(CassErrorKind::Error(
                                 "Failed to push map key-value pair to the Rune vector".to_string(),
                             )))
                         })?;
                     }
-                    Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                    Value::vec(rune_vec.into_inner()).map_err(|_| {
                         DeserializationError::new(CassError(CassErrorKind::Error(
                             "Failed to create shared Rune vector".to_string(),
                         )))
-                    })?)
+                    })?
                 }
                 _ => todo!(), // unexpected, should never be reached
             },
@@ -388,11 +370,11 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                             )))
                         })?;
                 }
-                Value::Object(Shared::new(rune_obj).map_err(|_| {
+                Value::new(rune_obj).map_err(|_| {
                     DeserializationError::new(CassError(CassErrorKind::Error(
-                        "Failed to create shared object for UDT".to_string(),
+                        "Failed to create object value for UDT".to_string(),
                     )))
-                })?)
+                })?
             }
             ColumnType::Tuple(tuple) => {
                 let mut rune_vec =
@@ -418,11 +400,11 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for RuneValue {
                     })?;
                 }
 
-                Value::Vec(Shared::new(rune_vec).map_err(|_| {
+                Value::vec(rune_vec.into_inner()).map_err(|_| {
                     DeserializationError::new(CassError(CassErrorKind::Error(
-                        "Failed to create shared vector for tuple".to_string(),
+                        "Failed to create vector value for tuple".to_string(),
                     )))
-                })?)
+                })?
             }
 
             _ => todo!(), // unexpected, should never be reached
@@ -496,19 +478,17 @@ mod tests {
     }
 
     fn assert_is_none(v: Value) {
-        match v {
-            Value::Option(shared) => {
-                assert!(shared.borrow_ref().unwrap().is_none(), "expected None");
-            }
-            other => panic!("expected Option(None), got {other:?}"),
+        match v.borrow_ref::<Option<Value>>() {
+            Ok(opt) => assert!(opt.is_none(), "expected None"),
+            Err(_) => panic!("expected Option(None)"),
         }
     }
 
     fn str_from(v: &Value) -> String {
-        match v {
-            Value::String(s) => s.borrow_ref().unwrap().as_str().to_owned(),
-            other => panic!("expected String, got {other:?}"),
-        }
+        v.borrow_ref::<rune::alloc::String>()
+            .expect("expected String")
+            .as_str()
+            .to_owned()
     }
 
     fn col_spec<'a>(name: &'a str, typ: ColumnType<'a>) -> ColumnSpec<'a> {
@@ -550,12 +530,10 @@ mod tests {
         let bytes = Bytes::new();
         let slice = FrameSlice::new(&bytes);
         let result = RuneValue::deserialize(&typ, Some(slice)).unwrap().0;
-        match result {
-            Value::Vec(shared) => {
-                assert!(shared.borrow_ref().unwrap().is_empty());
-            }
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let vec = result
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert!(vec.is_empty());
     }
 
     #[test]
@@ -573,14 +551,14 @@ mod tests {
     fn bool_true() {
         let typ = ColumnType::Native(NativeType::Boolean);
         let bytes = cql_to_raw(&typ, CqlValue::Boolean(true));
-        assert!(matches!(deser(&typ, &bytes), Value::Bool(true)));
+        assert!(deser(&typ, &bytes).as_bool().unwrap());
     }
 
     #[test]
     fn bool_false() {
         let typ = ColumnType::Native(NativeType::Boolean);
         let bytes = cql_to_raw(&typ, CqlValue::Boolean(false));
-        assert!(matches!(deser(&typ, &bytes), Value::Bool(false)));
+        assert!(!deser(&typ, &bytes).as_bool().unwrap());
     }
 
     // ── integer types ──────────────────────────────────────────────────────────
@@ -589,35 +567,35 @@ mod tests {
     fn tiny_int_roundtrip() {
         let typ = ColumnType::Native(NativeType::TinyInt);
         let bytes = cql_to_raw(&typ, CqlValue::TinyInt(-42));
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(-42)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), -42_i64);
     }
 
     #[test]
     fn small_int_roundtrip() {
         let typ = ColumnType::Native(NativeType::SmallInt);
         let bytes = cql_to_raw(&typ, CqlValue::SmallInt(1000));
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(1000)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), 1000_i64);
     }
 
     #[test]
     fn int_roundtrip() {
         let typ = ColumnType::Native(NativeType::Int);
         let bytes = cql_to_raw(&typ, CqlValue::Int(100_000));
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(100_000)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), 100_000_i64);
     }
 
     #[test]
     fn big_int_roundtrip() {
         let typ = ColumnType::Native(NativeType::BigInt);
         let bytes = cql_to_raw(&typ, CqlValue::BigInt(i64::MAX));
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(i64::MAX)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), i64::MAX);
     }
 
     #[test]
     fn counter_roundtrip() {
         let typ = ColumnType::Native(NativeType::Counter);
         let bytes = cql_to_raw(&typ, CqlValue::Counter(Counter(42)));
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(42)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), 42_i64);
     }
 
     // ── floating-point ─────────────────────────────────────────────────────────
@@ -626,20 +604,16 @@ mod tests {
     fn float_roundtrip() {
         let typ = ColumnType::Native(NativeType::Float);
         let bytes = cql_to_raw(&typ, CqlValue::Float(1.5));
-        match deser(&typ, &bytes) {
-            Value::Float(f) => assert!((f - 1.5_f32 as f64).abs() < 1e-7),
-            other => panic!("expected Float, got {other:?}"),
-        }
+        let f = deser(&typ, &bytes).as_float().expect("expected Float");
+        assert!((f - 1.5_f32 as f64).abs() < 1e-7);
     }
 
     #[test]
     fn double_roundtrip() {
         let typ = ColumnType::Native(NativeType::Double);
         let bytes = cql_to_raw(&typ, CqlValue::Double(1.23456789));
-        match deser(&typ, &bytes) {
-            Value::Float(f) => assert!((f - 1.23456789).abs() < 1e-10),
-            other => panic!("expected Float, got {other:?}"),
-        }
+        let f = deser(&typ, &bytes).as_float().expect("expected Float");
+        assert!((f - 1.23456789).abs() < 1e-10);
     }
 
     // ── text / ascii ───────────────────────────────────────────────────────────
@@ -664,17 +638,15 @@ mod tests {
     fn blob_becomes_vec_of_bytes() {
         let typ = ColumnType::Native(NativeType::Blob);
         let bytes = cql_to_raw(&typ, CqlValue::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF]));
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => {
-                let vec = shared.borrow_ref().unwrap();
-                assert_eq!(vec.len(), 4);
-                assert!(matches!(vec[0], Value::Byte(0xDE)));
-                assert!(matches!(vec[1], Value::Byte(0xAD)));
-                assert!(matches!(vec[2], Value::Byte(0xBE)));
-                assert!(matches!(vec[3], Value::Byte(0xEF)));
-            }
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 4);
+        assert_eq!(vec[0].as_integer::<u8>().unwrap(), 0xDE);
+        assert_eq!(vec[1].as_integer::<u8>().unwrap(), 0xAD);
+        assert_eq!(vec[2].as_integer::<u8>().unwrap(), 0xBE);
+        assert_eq!(vec[3].as_integer::<u8>().unwrap(), 0xEF);
     }
 
     // ── UUID / Timeuuid ────────────────────────────────────────────────────────
@@ -726,10 +698,10 @@ mod tests {
         let typ = ColumnType::Native(NativeType::Timestamp);
         let ts = CqlTimestamp(1_609_459_200_000); // 2021-01-01 00:00:00 UTC in ms
         let bytes = cql_to_raw(&typ, CqlValue::Timestamp(ts));
-        assert!(matches!(
-            deser(&typ, &bytes),
-            Value::Integer(1_609_459_200_000)
-        ));
+        assert_eq!(
+            deser(&typ, &bytes).as_signed().unwrap(),
+            1_609_459_200_000_i64
+        );
     }
 
     #[test]
@@ -737,7 +709,7 @@ mod tests {
         let typ = ColumnType::Native(NativeType::Date);
         let date = CqlDate(2_147_483_648u32); // 2^31
         let bytes = cql_to_raw(&typ, CqlValue::Date(date));
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(2_147_483_648)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), 2_147_483_648_i64);
     }
 
     #[test]
@@ -745,10 +717,10 @@ mod tests {
         let typ = ColumnType::Native(NativeType::Time);
         let time = CqlTime(3_600_000_000_000i64); // 1 hour in nanoseconds
         let bytes = cql_to_raw(&typ, CqlValue::Time(time));
-        assert!(matches!(
-            deser(&typ, &bytes),
-            Value::Integer(3_600_000_000_000)
-        ));
+        assert_eq!(
+            deser(&typ, &bytes).as_signed().unwrap(),
+            3_600_000_000_000_i64
+        );
     }
 
     // ── varint ────────────────────────────────────────────────────────────────
@@ -760,7 +732,7 @@ mod tests {
             &typ,
             CqlValue::Varint(CqlVarint::from_signed_bytes_be_slice(&[42])),
         );
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(42)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), 42_i64);
     }
 
     #[test]
@@ -770,7 +742,7 @@ mod tests {
             &typ,
             CqlValue::Varint(CqlVarint::from_signed_bytes_be_slice(&[0xFF])),
         );
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(-1)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), -1_i64);
     }
 
     #[test]
@@ -782,7 +754,7 @@ mod tests {
                 &i64::MAX.to_be_bytes(),
             )),
         );
-        assert!(matches!(deser(&typ, &bytes), Value::Integer(i64::MAX)));
+        assert_eq!(deser(&typ, &bytes).as_signed().unwrap(), i64::MAX);
     }
 
     #[test]
@@ -817,15 +789,13 @@ mod tests {
             nanoseconds: 3,
         };
         let bytes = cql_to_raw(&typ, CqlValue::Duration(dur));
-        match deser(&typ, &bytes) {
-            Value::Object(shared) => {
-                let obj = shared.borrow_ref().unwrap();
-                assert!(matches!(obj.get("months").unwrap(), Value::Integer(1)));
-                assert!(matches!(obj.get("days").unwrap(), Value::Integer(2)));
-                assert!(matches!(obj.get("nanoseconds").unwrap(), Value::Integer(3)));
-            }
-            other => panic!("expected Object, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let obj = binding
+            .borrow_ref::<rune::runtime::Object>()
+            .expect("expected Object");
+        assert_eq!(obj.get("months").unwrap().as_signed().unwrap(), 1_i64);
+        assert_eq!(obj.get("days").unwrap().as_signed().unwrap(), 2_i64);
+        assert_eq!(obj.get("nanoseconds").unwrap().as_signed().unwrap(), 3_i64);
     }
 
     // ── list ──────────────────────────────────────────────────────────────────
@@ -841,16 +811,14 @@ mod tests {
             &typ,
             CqlValue::List(vec![CqlValue::Int(1), CqlValue::Int(2), CqlValue::Int(3)]),
         );
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => {
-                let vec = shared.borrow_ref().unwrap();
-                assert_eq!(vec.len(), 3);
-                assert!(matches!(vec[0], Value::Integer(1)));
-                assert!(matches!(vec[1], Value::Integer(2)));
-                assert!(matches!(vec[2], Value::Integer(3)));
-            }
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 3);
+        assert_eq!(vec[0].as_signed().unwrap(), 1_i64);
+        assert_eq!(vec[1].as_signed().unwrap(), 2_i64);
+        assert_eq!(vec[2].as_signed().unwrap(), 3_i64);
     }
 
     // ── set ───────────────────────────────────────────────────────────────────
@@ -866,10 +834,11 @@ mod tests {
             &typ,
             CqlValue::Set(vec![CqlValue::Text("a".into()), CqlValue::Text("b".into())]),
         );
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => assert_eq!(shared.borrow_ref().unwrap().len(), 2),
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 2);
     }
 
     // ── map ───────────────────────────────────────────────────────────────────
@@ -886,21 +855,16 @@ mod tests {
             &typ,
             CqlValue::Map(vec![(CqlValue::Text("key".into()), CqlValue::Int(99))]),
         );
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => {
-                let vec = shared.borrow_ref().unwrap();
-                assert_eq!(vec.len(), 1);
-                match &vec[0] {
-                    Value::Tuple(tuple_shared) => {
-                        let tuple = tuple_shared.borrow_ref().unwrap();
-                        assert_eq!(str_from(&tuple[0]), "key");
-                        assert!(matches!(tuple[1], Value::Integer(99)));
-                    }
-                    other => panic!("expected Tuple inside map Vec, got {other:?}"),
-                }
-            }
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 1);
+        let tuple = vec[0]
+            .borrow_ref::<rune::runtime::OwnedTuple>()
+            .expect("expected Tuple inside map Vec");
+        assert_eq!(str_from(&tuple[0]), "key");
+        assert_eq!(tuple[1].as_signed().unwrap(), 99_i64);
     }
 
     // ── tuple ─────────────────────────────────────────────────────────────────
@@ -915,15 +879,13 @@ mod tests {
             &typ,
             CqlValue::Tuple(vec![Some(CqlValue::Int(7)), Some(CqlValue::Boolean(true))]),
         );
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => {
-                let vec = shared.borrow_ref().unwrap();
-                assert_eq!(vec.len(), 2);
-                assert!(matches!(vec[0], Value::Integer(7)));
-                assert!(matches!(vec[1], Value::Bool(true)));
-            }
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[0].as_signed().unwrap(), 7_i64);
+        assert!(vec[1].as_bool().unwrap());
     }
 
     #[test]
@@ -933,15 +895,13 @@ mod tests {
             ColumnType::Native(NativeType::Int),
         ]);
         let bytes = cql_to_raw(&typ, CqlValue::Tuple(vec![Some(CqlValue::Int(1)), None]));
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => {
-                let vec = shared.borrow_ref().unwrap();
-                assert_eq!(vec.len(), 2);
-                assert!(matches!(vec[0], Value::Integer(1)));
-                assert_is_none(vec[1].clone());
-            }
-            other => panic!("expected Vec, got {other:?}"),
-        }
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[0].as_signed().unwrap(), 1_i64);
+        assert_is_none(vec[1].clone());
     }
 
     // ── vector (CQL vector type) ───────────────────────────────────────────────
@@ -961,15 +921,13 @@ mod tests {
                 CqlValue::Float(3.0),
             ]),
         );
-        match deser(&typ, &bytes) {
-            Value::Vec(shared) => {
-                let vec = shared.borrow_ref().unwrap();
-                assert_eq!(vec.len(), 3);
-                for v in vec.iter() {
-                    assert!(matches!(v, Value::Float(_)));
-                }
-            }
-            other => panic!("expected Vec, got {other:?}"),
+        let binding = deser(&typ, &bytes);
+        let vec = binding
+            .borrow_ref::<rune::runtime::Vec>()
+            .expect("expected Vec");
+        assert_eq!(vec.len(), 3);
+        for v in vec.iter() {
+            assert!(v.as_float().is_ok());
         }
     }
 
@@ -999,14 +957,12 @@ mod tests {
                 ],
             },
         );
-        match deser(&udt_typ, &bytes) {
-            Value::Object(shared) => {
-                let obj = shared.borrow_ref().unwrap();
-                assert!(matches!(obj.get("x").unwrap(), Value::Integer(42)));
-                assert!(matches!(obj.get("y").unwrap(), Value::Bool(false)));
-            }
-            other => panic!("expected Object, got {other:?}"),
-        }
+        let binding = deser(&udt_typ, &bytes);
+        let obj = binding
+            .borrow_ref::<rune::runtime::Object>()
+            .expect("expected Object");
+        assert_eq!(obj.get("x").unwrap().as_signed().unwrap(), 42_i64);
+        assert!(!obj.get("y").unwrap().as_bool().unwrap());
     }
 
     #[test]
@@ -1027,13 +983,11 @@ mod tests {
                 fields: vec![("v".into(), None)],
             },
         );
-        match deser(&udt_typ, &bytes) {
-            Value::Object(shared) => {
-                let obj = shared.borrow_ref().unwrap();
-                assert_is_none(obj.get("v").unwrap().clone());
-            }
-            other => panic!("expected Object, got {other:?}"),
-        }
+        let binding = deser(&udt_typ, &bytes);
+        let obj = binding
+            .borrow_ref::<rune::runtime::Object>()
+            .expect("expected Object");
+        assert_is_none(obj.get("v").unwrap().clone());
     }
 
     // ── RuneRow ───────────────────────────────────────────────────────────────
@@ -1060,7 +1014,7 @@ mod tests {
         let row = RuneRow::deserialize(col_iter).unwrap();
 
         let obj = row.0;
-        assert!(matches!(obj.get("id").unwrap(), Value::Integer(42)));
+        assert_eq!(obj.get("id").unwrap().as_signed().unwrap(), 42_i64);
         assert_eq!(str_from(obj.get("name").unwrap()), "alice");
     }
 

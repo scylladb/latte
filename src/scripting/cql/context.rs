@@ -10,7 +10,7 @@ use crate::stats::session::SessionStats;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use rune::runtime::{Object, Shared, Vec as RuneVec};
+use rune::runtime::{Object, Vec as RuneVec};
 use rune::{Any, Value};
 use scylla::client::session::Session;
 use scylla::response::PagingState;
@@ -37,12 +37,12 @@ pub struct Context {
     // which don't 'depend on'/'use' the 'session' object.
     session: Option<Arc<Session>>,
     page_size: u64,
-    statements: HashMap<String, Arc<PreparedStatement>>,
-    pub stats: TryLock<SessionStats>,
+    statements: Arc<TryLock<HashMap<String, Arc<PreparedStatement>>>>,
+    pub stats: Arc<TryLock<SessionStats>>,
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
-    pub partition_row_presets: HashMap<String, RowDistributionPreset>,
+    pub partition_row_presets: Arc<TryLock<HashMap<String, RowDistributionPreset>>>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
     #[rune(get)]
@@ -72,20 +72,21 @@ impl Context {
         retry_interval: RetryInterval,
         validation_strategy: ValidationStrategy,
     ) -> Context {
+        let data = Value::new(Object::new()).unwrap();
         Context {
             start_time: TryLock::new(Instant::now()),
             session: session.map(Arc::new),
             page_size,
-            statements: HashMap::new(),
-            stats: TryLock::new(SessionStats::new()),
+            statements: Arc::new(TryLock::new(HashMap::new())),
+            stats: Arc::new(TryLock::new(SessionStats::new())),
             retry_number,
             retry_interval,
             validation_strategy,
-            partition_row_presets: HashMap::new(),
+            partition_row_presets: Arc::new(TryLock::new(HashMap::new())),
             load_cycle_count: 0,
             preferred_datacenter,
             preferred_rack,
-            data: Value::Object(Shared::new(Object::new()).unwrap()),
+            data,
         }
     }
 
@@ -99,18 +100,41 @@ impl Context {
         Ok(Context {
             session: self.session.clone(),
             page_size: self.page_size,
-            statements: self.statements.clone(),
-            stats: TryLock::new(SessionStats::default()),
+            statements: Arc::new(TryLock::new(self.statements.try_lock().unwrap().clone())),
+            stats: Arc::new(TryLock::new(SessionStats::default())),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
-            partition_row_presets: self.partition_row_presets.clone(),
+            partition_row_presets: Arc::new(TryLock::new(
+                self.partition_row_presets.try_lock().unwrap().clone(),
+            )),
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
             preferred_rack: self.preferred_rack.clone(),
             data: deserialized,
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
         })
+    }
+
+    /// Creates a shallow clone that shares the Arc-backed fields (stats, statements, presets)
+    /// with the original. Used to create a rune-owned `Value` for function call arguments
+    /// without losing stats tracking.
+    pub fn shallow_clone(&self) -> Self {
+        Context {
+            start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
+            session: self.session.clone(),
+            page_size: self.page_size,
+            statements: Arc::clone(&self.statements),
+            stats: Arc::clone(&self.stats),
+            retry_number: self.retry_number,
+            retry_interval: self.retry_interval,
+            validation_strategy: self.validation_strategy,
+            partition_row_presets: Arc::clone(&self.partition_row_presets),
+            load_cycle_count: self.load_cycle_count,
+            preferred_datacenter: self.preferred_datacenter.clone(),
+            preferred_rack: self.preferred_rack.clone(),
+            data: self.data.clone(),
+        }
     }
 
     /// Returns cluster metadata such as cluster name and DB version.
@@ -195,14 +219,17 @@ impl Context {
     }
 
     /// Prepares a statement and stores it in an internal statement map for future use.
-    pub async fn prepare(&mut self, key: &str, cql: &str) -> Result<(), CassError> {
+    pub async fn prepare(&self, key: &str, cql: &str) -> Result<(), CassError> {
         match &self.session {
             Some(session) => {
                 let statement = session
                     .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
                     .await
                     .map_err(|e| CassError::prepare_error(cql, e))?;
-                self.statements.insert(key.to_string(), Arc::new(statement));
+                self.statements
+                    .try_lock()
+                    .unwrap()
+                    .insert(key.to_string(), Arc::new(statement));
                 Ok(())
             }
             None => Err(CassError(CassErrorKind::Error(
@@ -319,12 +346,17 @@ impl Context {
             )));
         }
         let stmt = if let Some(key) = key {
-            self.statements.get(key).ok_or_else(|| {
-                CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
-            })?
+            self.statements
+                .try_lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or_else(|| {
+                    CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
+                })?
         } else {
             let cql = cql.expect("failed to unwrap the 'cql' parameter");
-            &Arc::new(
+            Arc::new(
                 session
                     .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
                     .await
@@ -359,7 +391,7 @@ impl Context {
         while current_attempt_num <= self.retry_number {
             let start_time = self.stats.try_lock().unwrap().start_request();
             let rs = session
-                .execute_single_page(stmt, &query_params, paging_state.clone())
+                .execute_single_page(&stmt, &query_params, paging_state.clone())
                 .await;
             let current_duration = Instant::now() - start_time;
             let (page, paging_state_response) = match rs {
@@ -380,11 +412,11 @@ impl Context {
                     match row_result {
                         Ok(RuneRow(row_obj)) => {
                             rune_rows
-                                .push(Value::Object(Shared::new(row_obj).map_err(|_| {
+                                .push(Value::new(row_obj).map_err(|_| {
                                     CassError(CassErrorKind::Error(
                                         "Failed to create shared row object".to_string(),
                                     ))
-                                })?))
+                                })?)
                                 .map_err(|_| {
                                     CassError(CassErrorKind::Error(
                                         "Failed to push row to result vector".to_string(),
@@ -413,13 +445,13 @@ impl Context {
                         .unwrap()
                         .complete_request(all_pages_duration, rows_num);
                     if process_and_return_data {
-                        return Ok(Value::Vec(Shared::new(rune_rows).map_err(|_| {
+                        return Value::vec(rune_rows.into_inner()).map_err(|_| {
                             CassError(CassErrorKind::Error(
                                 "Failed to create shared result vector".to_string(),
                             ))
-                        })?));
+                        });
                     } else {
-                        let empty_rune_vec = Value::Vec(Shared::new(RuneVec::new())?);
+                        let empty_rune_vec = Value::vec(Default::default())?;
                         let rows_min = match expected_rows_num_min {
                             None => return Ok(empty_rune_vec),
                             Some(rows_min) => rows_min,
@@ -492,10 +524,16 @@ impl Context {
         let mut batch: Batch = Batch::new(BatchType::Logged);
         let mut batch_values: Vec<RuneQueryParams<'_>> = Vec::with_capacity(keys_len);
         for (i, key) in keys.into_iter().enumerate() {
-            let statement = self.statements.get(key).ok_or_else(|| {
-                CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
-            })?;
-            batch.append_statement((**statement).clone());
+            let statement = self
+                .statements
+                .try_lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or_else(|| {
+                    CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
+                })?;
+            batch.append_statement((*statement).clone());
             batch_values.push(RuneQueryParams::new(params.get(i)));
         }
         match &self.session {

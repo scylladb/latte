@@ -5,9 +5,10 @@ use crate::scripting::cluster_info::ClusterInfo;
 use crate::scripting::row_distribution::RowDistributionPreset;
 use crate::stats::session::SessionStats;
 use aws_sdk_dynamodb::Client;
-use rune::runtime::{Object, Shared};
+use rune::runtime::Object;
 use rune::{Any, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use try_lock::TryLock;
 
@@ -15,12 +16,12 @@ use try_lock::TryLock;
 pub struct Context {
     client: Option<Client>,
     page_size: u64,
-    pub stats: TryLock<SessionStats>,
+    pub stats: Arc<TryLock<SessionStats>>,
     pub start_time: TryLock<Instant>,
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
-    pub partition_row_presets: HashMap<String, RowDistributionPreset>,
+    pub partition_row_presets: Arc<TryLock<HashMap<String, RowDistributionPreset>>>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
     #[rune(get)]
@@ -41,14 +42,14 @@ impl Context {
         Context {
             client,
             page_size,
-            stats: TryLock::new(SessionStats::new()),
+            stats: Arc::new(TryLock::new(SessionStats::new())),
             start_time: TryLock::new(Instant::now()),
             retry_number,
             retry_interval,
             validation_strategy,
-            partition_row_presets: HashMap::new(),
+            partition_row_presets: Arc::new(TryLock::new(HashMap::new())),
             load_cycle_count: 0,
-            data: Value::Object(Shared::new(Object::new()).unwrap()),
+            data: Value::new(Object::new()).unwrap(),
         }
     }
 
@@ -58,15 +59,34 @@ impl Context {
         Ok(Context {
             client: self.client.clone(),
             page_size: self.page_size,
-            stats: TryLock::new(SessionStats::default()),
+            stats: Arc::new(TryLock::new(SessionStats::default())),
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
-            partition_row_presets: self.partition_row_presets.clone(),
+            partition_row_presets: Arc::new(TryLock::new(
+                self.partition_row_presets.try_lock().unwrap().clone(),
+            )),
             load_cycle_count: self.load_cycle_count,
             data: deserialized,
         })
+    }
+
+    /// Creates a shallow clone that shares the Arc-backed fields (stats, presets)
+    /// with the original. Used to create a rune-owned `Value` for function call arguments.
+    pub fn shallow_clone(&self) -> Self {
+        Context {
+            client: self.client.clone(),
+            page_size: self.page_size,
+            stats: Arc::clone(&self.stats),
+            start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
+            retry_number: self.retry_number,
+            retry_interval: self.retry_interval,
+            validation_strategy: self.validation_strategy,
+            partition_row_presets: Arc::clone(&self.partition_row_presets),
+            load_cycle_count: self.load_cycle_count,
+            data: self.data.clone(),
+        }
     }
 
     /// Returns cluster metadata.

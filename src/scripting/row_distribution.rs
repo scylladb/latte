@@ -1,4 +1,4 @@
-use rune::runtime::{Mut, Ref};
+use rune::runtime::Ref;
 use rune::Any;
 use std::collections::HashMap;
 
@@ -169,14 +169,14 @@ impl RowDistributionPreset {
 
 #[rune::function(instance)]
 pub async fn init_partition_row_distribution_preset(
-    mut ctx: Mut<Context>,
+    ctx: Ref<Context>,
     preset_name: Ref<str>,
     row_count: u64,
     rows_per_partitions_base: u64,
     rows_per_partitions_groups: Ref<str>,
 ) -> Result<(), DbError> {
     _init_partition_row_distribution_preset(
-        &mut ctx,
+        &ctx,
         &preset_name,
         row_count,
         rows_per_partitions_base,
@@ -214,7 +214,7 @@ pub async fn get_partition_idx(ctx: Ref<Context>, preset_name: Ref<str>, idx: u6
 /// Creates a preset for uneven row distribution among partitions
 #[allow(clippy::comparison_chain)]
 async fn _init_partition_row_distribution_preset(
-    ctx: &mut Context,
+    ctx: &Context,
     preset_name: &str,
     row_count: u64,
     rows_per_partitions_base: u64,
@@ -412,6 +412,8 @@ async fn _init_partition_row_distribution_preset(
     // NOTE: generate row distributions only after the partition groups are finished with changes
     row_distribution_preset.generate_row_distributions();
     ctx.partition_row_presets
+        .try_lock()
+        .unwrap()
         .insert(preset_name.to_string(), row_distribution_preset);
 
     Ok(())
@@ -423,11 +425,17 @@ async fn _get_partition_info(
     preset_name: &str,
     idx: u64,
 ) -> Result<(u64, u64), DbError> {
-    let preset = ctx.partition_row_presets.get(preset_name).ok_or_else(|| {
-        DbError::new(DbErrorKind::PartitionRowPresetNotFound(
-            preset_name.to_string(),
-        ))
-    })?;
+    let preset = ctx
+        .partition_row_presets
+        .try_lock()
+        .unwrap()
+        .get(preset_name)
+        .cloned()
+        .ok_or_else(|| {
+            DbError::new(DbErrorKind::PartitionRowPresetNotFound(
+                preset_name.to_string(),
+            ))
+        })?;
     Ok(preset.get_partition_info(idx).await)
 }
 
@@ -526,20 +534,23 @@ mod tests {
         expected_idx_partition_idx_mapping: Vec<(u64, u64)>,
     ) {
         for (rows_per_partitions_base, rows_per_partitions_groups) in rows_per_partitions_base_and_groups_mapping {
-            let mut ctxt: Context = create_test_context();
+            let ctxt: Context = create_test_context();
             let preset_name = "foo_name";
 
-            assert!(ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should not be empty");
+            assert!(ctxt.partition_row_presets.try_lock().unwrap().is_empty(), "The 'partition_row_presets' HashMap should not be empty");
 
             tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let _ = _init_partition_row_distribution_preset(&mut ctxt, 
+                let _ = _init_partition_row_distribution_preset(&ctxt,
                     preset_name, row_count, rows_per_partitions_base, &rows_per_partitions_groups).await;
             });
 
-            assert!(!ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should not be empty");
-            let actual_preset = ctxt.partition_row_presets.get(preset_name)
-                .unwrap_or_else(|| panic!("Preset with name '{preset_name}' was not found"));
-            assert_eq!(expected_partition_groups, actual_preset.partition_groups);
+            assert!(!ctxt.partition_row_presets.try_lock().unwrap().is_empty(), "The 'partition_row_presets' HashMap should not be empty");
+            {
+                let binding = ctxt.partition_row_presets.try_lock().unwrap();
+                let actual_preset = binding.get(preset_name)
+                    .unwrap_or_else(|| panic!("Preset with name '{preset_name}' was not found"));
+                assert_eq!(expected_partition_groups, actual_preset.partition_groups);
+            }
 
             for (idx, expected_partition_idx) in expected_idx_partition_idx_mapping.clone() {
                 let (p_idx, _p_size) = tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -703,28 +714,28 @@ mod tests {
     fn test_partition_row_distribution_preset_05_pos_multiple_presets() {
         let name_foo: String = "foo".to_string();
         let name_bar: String = "bar".to_string();
-        let mut ctxt: Context = create_test_context();
+        let ctxt: Context = create_test_context();
 
-        assert!(ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should be empty");
-        let foo_value = ctxt.partition_row_presets.get(&name_foo);
+        assert!(ctxt.partition_row_presets.try_lock().unwrap().is_empty(), "The 'partition_row_presets' HashMap should be empty");
+        let foo_value = ctxt.partition_row_presets.try_lock().unwrap().get(&name_foo).cloned();
         assert_eq!(None, foo_value);
 
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            _init_partition_row_distribution_preset(&mut ctxt,
+            _init_partition_row_distribution_preset(&ctxt,
                 &name_foo, 1000, 10, "100:1").await
         }).unwrap_or_else(|_| panic!("The '{name_foo}' preset must have been created successfully"));
-        assert!(!ctxt.partition_row_presets.is_empty(), "The 'partition_row_presets' HashMap should not be empty");
-        ctxt.partition_row_presets.get(&name_foo)
+        assert!(!ctxt.partition_row_presets.try_lock().unwrap().is_empty(), "The 'partition_row_presets' HashMap should not be empty");
+        ctxt.partition_row_presets.try_lock().unwrap().get(&name_foo)
             .unwrap_or_else(|| panic!("Preset with name '{name_foo}' was not found"));
 
-        let absent_bar = ctxt.partition_row_presets.get(&name_bar);
+        let absent_bar = ctxt.partition_row_presets.try_lock().unwrap().get(&name_bar).cloned();
         assert_eq!(None, absent_bar, "{}", format_args!("The '{}' preset was expected to be absent", name_bar));
 
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            _init_partition_row_distribution_preset(&mut ctxt,
+            _init_partition_row_distribution_preset(&ctxt,
                 &name_bar, 1000, 10, "90:1,10:2").await
         }).unwrap_or_else(|_| panic!("The '{name_bar}' preset must have been created successfully"));
-        ctxt.partition_row_presets.get(&name_bar)
+        ctxt.partition_row_presets.try_lock().unwrap().get(&name_bar)
             .unwrap_or_else(|| panic!("Preset with name '{name_bar}' was not found"));
     }
 
@@ -734,9 +745,9 @@ mod tests {
         rows_per_partitions_base: u64,
         rows_per_partitions_groups: String,
     ) {
-        let mut ctxt: Context = create_test_context();
+        let ctxt: Context = create_test_context();
         let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            _init_partition_row_distribution_preset(&mut ctxt,
+            _init_partition_row_distribution_preset(&ctxt,
                 &preset_name, row_count, rows_per_partitions_base, &rows_per_partitions_groups).await
         });
 
