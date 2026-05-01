@@ -21,56 +21,30 @@ use rand::{Rng, SeedableRng};
 use rune::alloc::clone::TryClone;
 use rune::compile::meta::Kind;
 use rune::compile::{CompileVisitor, MetaError, MetaRef};
-use rune::runtime::{AnyObj, Args, RuntimeContext, Shared, VmError, VmResult};
+use rune::runtime::{Args, RuntimeContext, RuntimeError, VmError};
 use rune::termcolor::{ColorChoice, StandardStream};
-use rune::{vm_try, Any, Diagnostics, Source, Sources, ToValue, Unit, Value, Vm};
+use rune::{Diagnostics, Source, Sources, ToValue, Unit, Value, Vm};
 use serde::{Deserialize, Serialize};
 use try_lock::TryLock;
 
-/// Wraps a reference to Session that can be converted to a Rune `Value`
-/// and passed as one of `Args` arguments to a function.
-struct SessionRef<'a> {
-    context: &'a Context,
+/// Wraps a shallow clone of Context that can be converted to a rune-owned `Value`.
+/// The clone shares Arc-backed fields (stats, statements, presets) with the original,
+/// so stats tracking and prepared statements remain shared across function calls.
+struct SessionRef {
+    context: Context,
 }
 
-impl SessionRef<'_> {
-    pub fn new(context: &Context) -> SessionRef<'_> {
-        SessionRef { context }
+impl SessionRef {
+    pub fn new(context: &Context) -> SessionRef {
+        SessionRef {
+            context: context.shallow_clone(),
+        }
     }
 }
 
-/// We need this to be able to pass a reference to `Session` as an argument
-/// to Rune function.
-///
-/// Caution! Be careful using this trait. Undefined Behaviour possible.
-/// This is unsound - it is theoretically
-/// possible that the underlying `Session` gets dropped before the `Value` produced by this trait
-/// implementation and the compiler is not going to catch that.
-/// The receiver of a `Value` must ensure that it is dropped before `Session`!
-impl ToValue for SessionRef<'_> {
-    fn to_value(self) -> VmResult<Value> {
-        let obj = unsafe { AnyObj::from_ref(self.context) };
-        VmResult::Ok(Value::from(vm_try!(Shared::new(obj))))
-    }
-}
-
-/// Wraps a mutable reference to Session that can be converted to a Rune `Value` and passed
-/// as one of `Args` arguments to a function.
-struct ContextRefMut<'a> {
-    context: &'a mut Context,
-}
-
-impl ContextRefMut<'_> {
-    pub fn new(context: &mut Context) -> ContextRefMut<'_> {
-        ContextRefMut { context }
-    }
-}
-
-/// Caution! See `impl ToValue for SessionRef`.
-impl ToValue for ContextRefMut<'_> {
-    fn to_value(self) -> VmResult<Value> {
-        let obj = unsafe { AnyObj::from_mut(self.context) };
-        VmResult::Ok(Value::from(vm_try!(Shared::new(obj))))
+impl ToValue for SessionRef {
+    fn to_value(self) -> Result<Value, RuntimeError> {
+        Value::new(self.context).map_err(Into::into)
     }
 }
 
@@ -199,25 +173,21 @@ impl Program {
     /// fine, but the function could return an error value, and in this case we should not
     /// ignore it.
     fn convert_error(&self, function_name: &str, result: Value) -> Result<Value, LatteError> {
-        match result {
-            Value::Result(result) => match result.take().unwrap() {
+        if result.borrow_ref::<Result<Value, Value>>().is_ok() {
+            match result.downcast::<Result<Value, Value>>().unwrap() {
                 Ok(value) => Ok(value),
-                Err(Value::Any(e)) => {
-                    if e.borrow_ref().unwrap().type_hash() == DbError::type_hash() {
-                        let e = e.take_downcast::<DbError>().unwrap();
-                        return Err(LatteError::Database(Box::new(e)));
+                Err(err_value) => {
+                    if err_value.borrow_ref::<DbError>().is_ok() {
+                        let e = err_value.downcast::<DbError>().unwrap();
+                        Err(LatteError::Database(Box::new(e)))
+                    } else {
+                        let msg = self.vm().with(|| format!("{err_value:?}"));
+                        Err(LatteError::FunctionResult(function_name.to_string(), msg))
                     }
-
-                    let e = Value::Any(e);
-                    let msg = self.vm().with(|| format!("{e:?}"));
-                    Err(LatteError::FunctionResult(function_name.to_string(), msg))
                 }
-                Err(other) => Err(LatteError::FunctionResult(
-                    function_name.to_string(),
-                    format!("{other:?}"),
-                )),
-            },
-            other => Ok(other),
+            }
+        } else {
+            Ok(result)
         }
     }
 
@@ -267,24 +237,24 @@ impl Program {
     /// Calls the script's `init` function.
     /// Called once at the beginning of the benchmark.
     /// Typically used to prepare statements.
-    pub async fn prepare(&mut self, context: &mut Context) -> Result<(), LatteError> {
-        let context = ContextRefMut::new(context);
+    pub async fn prepare(&mut self, context: &Context) -> Result<(), LatteError> {
+        let context = SessionRef::new(context);
         self.async_call(&FnRef::new(PREPARE_FN), (context,)).await?;
         Ok(())
     }
 
     /// Calls the script's `schema` function.
     /// Typically used to create database schema.
-    pub async fn schema(&mut self, context: &mut Context) -> Result<(), LatteError> {
-        let context = ContextRefMut::new(context);
+    pub async fn schema(&mut self, context: &Context) -> Result<(), LatteError> {
+        let context = SessionRef::new(context);
         self.async_call(&FnRef::new(SCHEMA_FN), (context,)).await?;
         Ok(())
     }
 
     /// Calls the script's `erase` function.
     /// Typically used to remove the data from the database before running the benchmark.
-    pub async fn erase(&mut self, context: &mut Context) -> Result<(), LatteError> {
-        let context = ContextRefMut::new(context);
+    pub async fn erase(&mut self, context: &Context) -> Result<(), LatteError> {
+        let context = SessionRef::new(context);
         self.async_call(&FnRef::new(ERASE_FN), (context,)).await?;
         Ok(())
     }

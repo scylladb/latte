@@ -137,13 +137,13 @@ async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<ClusterInfo>)
 /// Exits with error if the `schema` function is not present or fails.
 async fn schema(conf: SchemaCommand) -> Result<()> {
     let mut program = load_workload_script(&conf.workload, &conf.params)?;
-    let (mut session, _) = connect(&conf.connection).await?;
+    let (session, _) = connect(&conf.connection).await?;
     if !program.has_schema() {
         eprintln!("error: Function `schema` not found in the workload script.");
         exit(255);
     }
     eprintln!("info: Creating schema...");
-    if let Err(e) = program.schema(&mut session).await {
+    if let Err(e) = program.schema(&session).await {
         eprintln!("error: Failed to create schema: {e}");
         exit(255);
     }
@@ -155,11 +155,11 @@ async fn schema(conf: SchemaCommand) -> Result<()> {
 /// Exits with error if the `load` function is not present or fails.
 async fn load(conf: LoadCommand) -> Result<()> {
     let mut program = load_workload_script(&conf.workload, &conf.params)?;
-    let (mut session, _) = connect(&conf.connection).await?;
+    let (session, _) = connect(&conf.connection).await?;
 
     if program.has_prepare() {
         eprintln!("info: Preparing...");
-        if let Err(e) = program.prepare(&mut session).await {
+        if let Err(e) = program.prepare(&session).await {
             eprintln!("error: Failed to prepare: {e}");
             exit(255);
         }
@@ -173,7 +173,7 @@ async fn load(conf: LoadCommand) -> Result<()> {
 
     if program.has_erase() {
         eprintln!("info: Erasing data...");
-        if let Err(e) = program.erase(&mut session).await {
+        if let Err(e) = program.erase(&session).await {
             eprintln!("error: Failed to erase: {e}");
             exit(255);
         }
@@ -236,18 +236,18 @@ async fn run(conf: RunCommand) -> Result<()> {
         functions.push((function, f.weight))
     }
 
-    let (mut session, cluster_info) = connect(&conf.connection).await?;
+    let (session, cluster_info) = connect(&conf.connection).await?;
 
     // NOTE: Add info about the target rune functions to the context
     //       for the more flexible tweaking of the 'prepare' rune function.
-    match &mut session.data {
-        rune::Value::Object(shared_obj) => {
-            let _ = shared_obj.borrow_mut()?.insert(
+    match session.data.borrow_mut::<rune::runtime::Object>() {
+        Ok(mut obj) => {
+            let _ = obj.insert(
                 rune::alloc::String::try_from("functions_to_invoke")?,
                 rune::to_value(functions_to_invoke)?,
             );
         }
-        _ => {
+        Err(_) => {
             eprintln!("error: session.data is not a Rune Object");
             exit(255);
         }
@@ -260,7 +260,7 @@ async fn run(conf: RunCommand) -> Result<()> {
 
     if program.has_prepare() {
         eprintln!("info: Preparing...");
-        if let Err(e) = program.prepare(&mut session).await {
+        if let Err(e) = program.prepare(&session).await {
             eprintln!("error: Failed to prepare: {e}");
             exit(255);
         }

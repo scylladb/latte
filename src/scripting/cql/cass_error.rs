@@ -116,9 +116,9 @@ pub struct QueryInfo {
 }
 
 impl CassError {
-    #[rune::function(protocol = STRING_DISPLAY)]
+    #[rune::function(protocol = DISPLAY_FMT)]
     pub fn string_display(&self, f: &mut rune::runtime::Formatter) -> VmResult<()> {
-        vm_write!(f, "{}", self.to_string());
+        let _ = vm_write!(f, "{}", self.to_string());
         VmResult::Ok(())
     }
 
@@ -280,26 +280,22 @@ impl std::error::Error for CassError {}
 
 /// Formats a rune Value into a list of parameter display strings for error messages
 fn rune_value_to_param_strings(value: Option<&Value>) -> Vec<String> {
-    match value {
-        None => vec![],
-        Some(Value::Tuple(tuple)) => match tuple.borrow_ref() {
-            Ok(tuple) => tuple.iter().map(|v| format!("{v:?}")).collect(),
-            Err(_) => vec!["<borrow error>".to_string()],
-        },
-        Some(Value::Vec(vec)) => match vec.borrow_ref() {
-            Ok(vec) => vec.iter().map(|v| format!("{v:?}")).collect(),
-            Err(_) => vec!["<borrow error>".to_string()],
-        },
-        Some(Value::Object(obj)) => match obj.borrow_ref() {
-            Ok(obj) => obj.iter().map(|(k, v)| format!("{k}: {v:?}")).collect(),
-            Err(_) => vec!["<borrow error>".to_string()],
-        },
-        Some(Value::Struct(obj)) => match obj.borrow_ref() {
-            Ok(obj) => vec![format!("{obj:?}")],
-            Err(_) => vec!["<borrow error>".to_string()],
-        },
-        Some(other) => vec![format!("{other:?}")],
+    let Some(v) = value else {
+        return vec![];
+    };
+    if let Ok(tuple) = v.borrow_ref::<rune::runtime::OwnedTuple>() {
+        return tuple.iter().map(|v| format!("{v:?}")).collect();
     }
+    if let Ok(vec) = v.borrow_ref::<rune::runtime::Vec>() {
+        return vec.iter().map(|v| format!("{v:?}")).collect();
+    }
+    if let Ok(obj) = v.borrow_ref::<rune::runtime::Object>() {
+        return obj.iter().map(|(k, v)| format!("{k}: {v:?}")).collect();
+    }
+    if let Ok(rune::runtime::TypeValue::Struct(s)) = v.as_type_value() {
+        return vec![format!("{s:?}")];
+    }
+    vec![format!("{v:?}")]
 }
 
 impl Display for QueryInfo {

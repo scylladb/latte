@@ -7,14 +7,16 @@ use crate::scripting::retry_error::handle_retry_error;
 
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
-use super::types::{alternator_map_to_rune_object, rune_object_to_alternator_map};
+use super::types::{
+    alternator_map_to_rune_object, hashmap_to_rune_object, rune_object_to_alternator_map,
+};
 use super::types::{BSET_KEY, NSET_KEY, SSET_KEY};
 use aws_sdk_dynamodb::client::Waiters;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, DeleteRequest, KeySchemaElement, KeyType, KeysAndAttributes, PutRequest,
     ScalarAttributeType, WriteRequest,
 };
-use rune::runtime::{Object, Ref, Shared, VmResult};
+use rune::runtime::{Object, Ref, VmResult};
 use rune::{ToValue, Value};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -30,25 +32,33 @@ fn bad_input<T>(msg: impl Into<String>) -> Result<T, AlternatorError> {
 
 /// Gets the name and type of a primary or sort key from a object.
 fn extract_key_definition(
-    object: &Shared<Object>,
+    object: &Object,
 ) -> Result<(String, ScalarAttributeType), AlternatorError> {
-    let key_name = if let Some(Value::String(s)) = object.borrow_ref()?.get("name") {
-        s.borrow_ref()?.to_string()
+    let key_name = if let Some(v) = object.get("name") {
+        if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+            s.as_str().to_string()
+        } else {
+            return bad_input("Key definition object must have a 'name' field");
+        }
     } else {
         return bad_input("Key definition object must have a 'name' field");
     };
 
-    let key_type = if let Some(Value::String(t)) = object.borrow_ref()?.get("type") {
-        match t.borrow_ref()?.as_str() {
-            "N" => ScalarAttributeType::N,
-            "S" => ScalarAttributeType::S,
-            "B" => ScalarAttributeType::B,
-            other => {
-                return bad_input(format!(
-                    "Invalid key type: {}, only N, S, and B are allowed.",
-                    other
-                ))
+    let key_type = if let Some(v) = object.get("type") {
+        if let Ok(t) = v.borrow_ref::<rune::alloc::String>() {
+            match t.as_str() {
+                "N" => ScalarAttributeType::N,
+                "S" => ScalarAttributeType::S,
+                "B" => ScalarAttributeType::B,
+                other => {
+                    return bad_input(format!(
+                        "Invalid key type: {}, only N, S, and B are allowed.",
+                        other
+                    ))
+                }
             }
+        } else {
+            return bad_input("Key definition object must have a 'type' field");
         }
     } else {
         return bad_input("Key definition object must have a 'type' field");
@@ -57,20 +67,15 @@ fn extract_key_definition(
     Ok((key_name, key_type))
 }
 
-fn extract_attribute_names(
-    object: &Shared<Object>,
-) -> Result<HashMap<String, String>, AlternatorError> {
+fn extract_attribute_names(object: &Object) -> Result<HashMap<String, String>, AlternatorError> {
     object
-        .borrow_ref()?
         .iter()
         .map(|(k, v)| {
-            Ok((
-                k.to_string(),
-                match v {
-                    Value::String(s) => s.borrow_ref()?.to_string(),
-                    _ => return bad_input("Attribute names must be strings"),
-                },
-            ))
+            if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+                Ok((k.to_string(), s.as_str().to_string()))
+            } else {
+                bad_input("Attribute names must be strings")
+            }
         })
         .collect::<Result<_, _>>()
 }
@@ -206,16 +211,16 @@ fn format_batch_result(
     with_result: bool,
 ) -> Result<Value, AlternatorError> {
     if !with_result {
-        return Ok(Value::EmptyTuple);
+        return Ok(Value::from(()));
     }
 
     if auto_paginate {
-        return Ok(items.to_value().into_result()?);
+        return Ok(items.to_value()?);
     }
 
     let mut res_map = HashMap::new();
 
-    res_map.insert("items".to_string(), items.to_value().into_result()?);
+    res_map.insert("items".to_string(), items.to_value()?);
 
     match token {
         Some(PaginationToken::UnprocessedKeys(u_keys)) => {
@@ -227,13 +232,13 @@ fn format_batch_result(
                         .into_iter()
                         .map(alternator_map_to_rune_object)
                         .collect::<Result<_, _>>()?;
-                    Ok((table_name, keys.to_value().into_result()?))
+                    Ok((table_name, keys.to_value()?))
                 })
                 .collect::<Result<_, AlternatorError>>()?;
 
             res_map.insert(
                 "unprocessed_keys".to_string(),
-                unprocessed_map.to_value().into_result()?,
+                hashmap_to_rune_object(unprocessed_map)?,
             );
         }
         Some(PaginationToken::UnprocessedItems(u_items)) => {
@@ -246,37 +251,36 @@ fn format_batch_result(
                             let mut req_map = HashMap::new();
 
                             if let Some(put) = req.put_request {
-                                req_map.insert("type".to_string(), "put".to_value().into_result()?);
+                                req_map.insert("type".to_string(), "put".to_value()?);
                                 req_map.insert(
                                     "item".to_string(),
                                     alternator_map_to_rune_object(put.item)?,
                                 );
                             } else if let Some(del) = req.delete_request {
-                                req_map
-                                    .insert("type".to_string(), "delete".to_value().into_result()?);
+                                req_map.insert("type".to_string(), "delete".to_value()?);
                                 req_map.insert(
                                     "key".to_string(),
                                     alternator_map_to_rune_object(del.key)?,
                                 );
                             }
 
-                            Ok(req_map.to_value().into_result()?)
+                            hashmap_to_rune_object(req_map)
                         })
                         .collect::<Result<_, AlternatorError>>()?;
 
-                    Ok((table_name, requests.to_value().into_result()?))
+                    Ok((table_name, requests.to_value()?))
                 })
                 .collect::<Result<_, AlternatorError>>()?;
 
             res_map.insert(
                 "unprocessed_items".to_string(),
-                unprocessed_map.to_value().into_result()?,
+                hashmap_to_rune_object(unprocessed_map)?,
             );
         }
         _ => {}
     }
 
-    Ok(res_map.to_value().into_result()?)
+    hashmap_to_rune_object(res_map)
 }
 
 /// Creates a new table.
@@ -295,25 +299,51 @@ pub async fn create_table(
     let client = ctx.get_client()?;
 
     // Extract primary key definition
-    let (pk_name, pk_type) = match &params {
-        Value::String(s) => (s.borrow_ref()?.to_string(), ScalarAttributeType::S),
-        Value::Object(o) => match o.borrow_ref()?.get("primary_key") {
-            Some(Value::String(s)) => (s.borrow_ref()?.to_string(), ScalarAttributeType::S),
-            Some(Value::Object(pk_obj)) => extract_key_definition(pk_obj)?,
+    let (pk_name, pk_type) = if let Ok(s) = params.borrow_ref::<rune::alloc::String>() {
+        (s.as_str().to_string(), ScalarAttributeType::S)
+    } else if let Ok(o) = params.borrow_ref::<Object>() {
+        match o.get("primary_key") {
+            Some(v) if v.borrow_ref::<rune::alloc::String>().is_ok() => (
+                v.borrow_ref::<rune::alloc::String>()
+                    .unwrap()
+                    .as_str()
+                    .to_string(),
+                ScalarAttributeType::S,
+            ),
+            Some(v) => {
+                if let Ok(pk_obj) = v.borrow_ref::<Object>() {
+                    extract_key_definition(&pk_obj)?
+                } else {
+                    return bad_input("Invalid 'primary_key' object in params");
+                }
+            }
             _ => return bad_input("Invalid 'primary_key' object in params"),
-        },
-        _ => return bad_input("Params must be a string or an object"),
+        }
+    } else {
+        return bad_input("Params must be a string or an object");
     };
 
     // Extract sort key definition if present
-    let sk = match &params {
-        Value::Object(o) => match o.borrow_ref()?.get("sort_key") {
-            Some(Value::String(s)) => Some((s.borrow_ref()?.to_string(), ScalarAttributeType::S)),
-            Some(Value::Object(sk_obj)) => Some(extract_key_definition(sk_obj)?),
-            Some(_) => return bad_input("Invalid 'sort_key' object in params"),
+    let sk = if let Ok(o) = params.borrow_ref::<Object>() {
+        match o.get("sort_key") {
+            Some(v) if v.borrow_ref::<rune::alloc::String>().is_ok() => Some((
+                v.borrow_ref::<rune::alloc::String>()
+                    .unwrap()
+                    .as_str()
+                    .to_string(),
+                ScalarAttributeType::S,
+            )),
+            Some(v) => {
+                if let Ok(sk_obj) = v.borrow_ref::<Object>() {
+                    Some(extract_key_definition(&sk_obj)?)
+                } else {
+                    return bad_input("Invalid 'sort_key' object in params");
+                }
+            }
             None => None,
-        },
-        _ => None,
+        }
+    } else {
+        None
     };
 
     let mut builder = client
@@ -392,7 +422,7 @@ pub async fn put(
     let builder = client
         .put_item()
         .table_name(table_name.deref())
-        .set_item(Some(rune_object_to_alternator_map(item)?));
+        .set_item(Some(rune_object_to_alternator_map(&item)?));
 
     handle_request(&ctx, builder).await?;
 
@@ -416,7 +446,7 @@ pub async fn delete(
     let builder = client
         .delete_item()
         .table_name(table_name.deref())
-        .set_key(Some(rune_object_to_alternator_map(key)?));
+        .set_key(Some(rune_object_to_alternator_map(&key)?));
 
     handle_request(&ctx, builder).await?;
 
@@ -449,25 +479,23 @@ pub async fn get(
     let mut builder = client
         .get_item()
         .table_name(table_name.deref())
-        .set_key(Some(rune_object_to_alternator_map(key)?));
+        .set_key(Some(rune_object_to_alternator_map(&key)?));
 
-    if let Value::Object(opts) = &options {
-        if let Some(Value::Bool(consistent_read)) = opts.borrow_ref()?.get("consistent_read") {
-            builder = builder.consistent_read(*consistent_read);
+    if let Ok(opts) = options.borrow_ref::<Object>() {
+        if let Some(b) = opts.get("consistent_read").and_then(|v| v.as_bool().ok()) {
+            builder = builder.consistent_read(b);
         }
     }
 
     let result = handle_request(&ctx, builder).await?;
 
-    if let Value::Object(opts) = &options {
-        if let Some(Value::Bool(with_result)) = opts.borrow_ref()?.get("with_result") {
-            if *with_result {
-                return Ok(result.into_iter().next().to_value().into_result()?);
-            }
+    if let Ok(opts) = options.borrow_ref::<Object>() {
+        if opts.get("with_result").and_then(|v| v.as_bool().ok()) == Some(true) {
+            return Ok(result.into_iter().next().to_value()?);
         }
     }
 
-    Ok(Value::EmptyTuple)
+    Ok(Value::from(()))
 }
 
 /// Updates an item in the table.
@@ -492,21 +520,25 @@ pub async fn update(
     let mut builder = client
         .update_item()
         .table_name(table_name.deref())
-        .set_key(Some(rune_object_to_alternator_map(key)?));
+        .set_key(Some(rune_object_to_alternator_map(&key)?));
 
-    if let Some(Value::String(update_expression)) = params.get("update") {
-        builder = builder.update_expression(update_expression.borrow_ref()?.to_string());
+    if let Some(v) = params.get("update") {
+        if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+            builder = builder.update_expression(s.as_str().to_string());
+        }
     }
 
-    if let Some(Value::Object(attr_names)) = params.get("attribute_names") {
-        builder =
-            builder.set_expression_attribute_names(Some(extract_attribute_names(attr_names)?));
+    if let Some(v) = params.get("attribute_names") {
+        if let Ok(obj) = v.borrow_ref::<Object>() {
+            builder = builder.set_expression_attribute_names(Some(extract_attribute_names(&obj)?));
+        }
     }
 
-    if let Some(Value::Object(attr_values)) = params.get("attribute_values") {
-        builder = builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(
-            attr_values.clone().into_ref()?,
-        )?));
+    if let Some(v) = params.get("attribute_values") {
+        if let Ok(obj) = v.borrow_ref::<Object>() {
+            builder =
+                builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(&obj)?));
+        }
     }
 
     handle_request(&ctx, builder).await?;
@@ -537,34 +569,41 @@ pub async fn batch_get_item(
     let mut get_unprocessed = false;
     let mut consistent_read = false;
 
-    if let Value::Object(opts) = &options {
-        let opts_ref = opts.borrow_ref()?;
-        if let Some(Value::Bool(c)) = opts_ref.get("consistent_read") {
-            consistent_read = *c;
+    if let Ok(opts_ref) = options.borrow_ref::<Object>() {
+        if let Some(c) = opts_ref
+            .get("consistent_read")
+            .and_then(|v| v.as_bool().ok())
+        {
+            consistent_read = c;
         }
-        if let Some(Value::Bool(w)) = opts_ref.get("with_result") {
-            with_result = *w;
+        if let Some(w) = opts_ref.get("with_result").and_then(|v| v.as_bool().ok()) {
+            with_result = w;
         }
-        if let Some(Value::Bool(u)) = opts_ref.get("get_unprocessed") {
-            get_unprocessed = *u;
+        if let Some(u) = opts_ref
+            .get("get_unprocessed")
+            .and_then(|v| v.as_bool().ok())
+        {
+            get_unprocessed = u;
         }
     }
 
     let request_items: HashMap<String, KeysAndAttributes> = requests
         .iter()
         .map(|(table_name, keys_val)| {
-            let keys_vec = match keys_val {
-                Value::Vec(vec) => vec.borrow_ref()?,
-                _ => return bad_input("Each table's requests must be a list of keys"),
+            let keys_vec = if let Ok(vec) = keys_val.borrow_ref::<rune::runtime::Vec>() {
+                vec
+            } else {
+                return bad_input("Each table's requests must be a list of keys");
             };
 
             let keys_list = keys_vec
                 .iter()
-                .map(|key_val| match key_val {
-                    Value::Object(key_obj) => {
-                        rune_object_to_alternator_map(key_obj.clone().into_ref()?)
+                .map(|key_val| {
+                    if let Ok(key_obj) = key_val.borrow_ref::<Object>() {
+                        rune_object_to_alternator_map(&key_obj)
+                    } else {
+                        bad_input("Each key in the keys list must be an object")
                     }
-                    _ => bad_input("Each key in the keys list must be an object"),
                 })
                 .collect::<Result<_, _>>()?;
 
@@ -606,32 +645,39 @@ pub async fn batch_write_item(
 
     let mut get_unprocessed = false;
 
-    if let Value::Object(opts) = &options {
-        let opts_ref = opts.borrow_ref()?;
-        if let Some(Value::Bool(x)) = opts_ref.get("get_unprocessed") {
-            get_unprocessed = *x;
+    if let Ok(opts_ref) = options.borrow_ref::<Object>() {
+        if let Some(x) = opts_ref
+            .get("get_unprocessed")
+            .and_then(|v| v.as_bool().ok())
+        {
+            get_unprocessed = x;
         }
     }
 
     let request_items: HashMap<String, Vec<WriteRequest>> = requests
         .iter()
         .map(|(table_name, reqs_val)| {
-            let reqs_vec = match reqs_val {
-                Value::Vec(vec) => vec.borrow_ref()?,
-                _ => return bad_input("Each table's requests must be a list of write requests"),
+            let reqs_vec = if let Ok(vec) = reqs_val.borrow_ref::<rune::runtime::Vec>() {
+                vec
+            } else {
+                return bad_input("Each table's requests must be a list of write requests");
             };
 
             let writes = reqs_vec
                 .iter()
                 .map(|req_val| {
-                    let Value::Object(req_obj) = req_val else {
+                    let req_ref = if let Ok(obj) = req_val.borrow_ref::<Object>() {
+                        obj
+                    } else {
                         return bad_input("Each write request must be an object");
                     };
 
-                    let req_ref = req_obj.borrow_ref()?;
-
                     let req_type = match req_ref.get("type") {
-                        Some(Value::String(t)) => t.borrow_ref()?.to_string(),
+                        Some(t) if t.borrow_ref::<rune::alloc::String>().is_ok() => t
+                            .borrow_ref::<rune::alloc::String>()
+                            .unwrap()
+                            .as_str()
+                            .to_string(),
                         _ => {
                             return bad_input(
                                 "Write request must have a 'type' field (put or delete)",
@@ -641,11 +687,14 @@ pub async fn batch_write_item(
 
                     match req_type.as_str() {
                         "put" => {
-                            let Some(Value::Object(item)) = req_ref.get("item") else {
-                                return bad_input("Put request must have an 'item' field");
+                            let item_obj = match req_ref.get("item") {
+                                Some(v) if v.borrow_ref::<Object>().is_ok() => {
+                                    v.borrow_ref::<Object>().unwrap()
+                                }
+                                _ => return bad_input("Put request must have an 'item' field"),
                             };
 
-                            let item_map = rune_object_to_alternator_map(item.clone().into_ref()?)?;
+                            let item_map = rune_object_to_alternator_map(&item_obj)?;
 
                             Ok(WriteRequest::builder()
                                 .put_request(
@@ -654,11 +703,14 @@ pub async fn batch_write_item(
                                 .build())
                         }
                         "delete" => {
-                            let Some(Value::Object(key)) = req_ref.get("key") else {
-                                return bad_input("Delete request must have a 'key' field");
+                            let key_obj = match req_ref.get("key") {
+                                Some(v) if v.borrow_ref::<Object>().is_ok() => {
+                                    v.borrow_ref::<Object>().unwrap()
+                                }
+                                _ => return bad_input("Delete request must have a 'key' field"),
                             };
 
-                            let key_map = rune_object_to_alternator_map(key.clone().into_ref()?)?;
+                            let key_map = rune_object_to_alternator_map(&key_obj)?;
 
                             Ok(WriteRequest::builder()
                                 .delete_request(
@@ -718,58 +770,66 @@ pub async fn query(
 
     let mut builder = client.query().table_name(table_name.deref());
 
-    if let Some(Value::String(key_condition_expression)) = params.get("query") {
-        builder =
-            builder.key_condition_expression(key_condition_expression.borrow_ref()?.to_string());
+    if let Some(v) = params.get("query") {
+        if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+            builder = builder.key_condition_expression(s.as_str().to_string());
+        }
     }
 
-    if let Some(Value::String(filter_expression)) = params.get("filter") {
-        builder = builder.filter_expression(filter_expression.borrow_ref()?.to_string());
+    if let Some(v) = params.get("filter") {
+        if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+            builder = builder.filter_expression(s.as_str().to_string());
+        }
     }
 
-    if let Some(Value::Object(attr_names)) = params.get("attribute_names") {
-        builder =
-            builder.set_expression_attribute_names(Some(extract_attribute_names(attr_names)?));
+    if let Some(v) = params.get("attribute_names") {
+        if let Ok(obj) = v.borrow_ref::<Object>() {
+            builder = builder.set_expression_attribute_names(Some(extract_attribute_names(&obj)?));
+        }
     }
 
-    if let Some(Value::Object(attr_values)) = params.get("attribute_values") {
-        builder = builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(
-            attr_values.clone().into_ref()?,
-        )?));
+    if let Some(v) = params.get("attribute_values") {
+        if let Ok(obj) = v.borrow_ref::<Object>() {
+            builder =
+                builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(&obj)?));
+        }
     }
 
-    if let Some(Value::Bool(consistent_read)) = params.get("consistent_read") {
-        builder = builder.consistent_read(*consistent_read);
+    if let Some(b) = params.get("consistent_read").and_then(|v| v.as_bool().ok()) {
+        builder = builder.consistent_read(b);
     }
 
     if let Some(limit_val) = params.get("limit") {
-        builder = builder.limit(match limit_val {
-            Value::Integer(i) => match i32::try_from(*i) {
+        if let Ok(i) = limit_val.as_signed() {
+            builder = builder.limit(match i32::try_from(i) {
                 Ok(val) => val,
                 Err(_) => return bad_input("limit is out of range"),
-            },
-            _ => return bad_input("limit must be an integer"),
-        });
+            });
+        } else {
+            return bad_input("limit must be an integer");
+        }
     }
 
-    let validation = if let Some(Value::Vec(validation)) = params.get("validation") {
-        Some(
-            extract_validation_args(validation.borrow_ref()?.to_vec())
-                .map_err(|s| AlternatorError::new(AlternatorErrorKind::BadInput(s)))?,
-        )
+    let validation = if let Some(v) = params.get("validation") {
+        if let Ok(vec) = v.borrow_ref::<rune::runtime::Vec>() {
+            Some(
+                extract_validation_args(vec.to_vec())
+                    .map_err(|s| AlternatorError::new(AlternatorErrorKind::BadInput(s)))?,
+            )
+        } else {
+            None
+        }
     } else {
         None
     };
 
     let result = handle_request_with_validation(&ctx, builder, validation, "Query").await?;
 
-    if let Some(Value::Bool(with_result)) = params.get("with_result") {
-        if *with_result {
-            return Ok(result.to_value().into_result()?);
-        }
+    if params.get("with_result").and_then(|v| v.as_bool().ok()) == Some(true) {
+        return Ok(result.to_value()?);
     }
 
-    Ok(Value::EmptyTuple)
+    Ok(Value::from(()))
 }
 
 /// Scans items from the table.
@@ -797,75 +857,85 @@ pub async fn scan(
 
     let mut builder = client.scan().table_name(table_name.deref());
 
-    if let Some(Value::String(filter_expression)) = params.get("filter") {
-        builder = builder.filter_expression(filter_expression.borrow_ref()?.to_string());
+    if let Some(v) = params.get("filter") {
+        if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+            builder = builder.filter_expression(s.as_str().to_string());
+        }
     }
 
-    if let Some(Value::Object(attr_names)) = params.get("attribute_names") {
-        builder =
-            builder.set_expression_attribute_names(Some(extract_attribute_names(attr_names)?));
+    if let Some(v) = params.get("attribute_names") {
+        if let Ok(obj) = v.borrow_ref::<Object>() {
+            builder = builder.set_expression_attribute_names(Some(extract_attribute_names(&obj)?));
+        }
     }
 
-    if let Some(Value::Object(attr_values)) = params.get("attribute_values") {
-        builder = builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(
-            attr_values.clone().into_ref()?,
-        )?));
+    if let Some(v) = params.get("attribute_values") {
+        if let Ok(obj) = v.borrow_ref::<Object>() {
+            builder =
+                builder.set_expression_attribute_values(Some(rune_object_to_alternator_map(&obj)?));
+        }
     }
 
-    if let Some(Value::Bool(consistent_read)) = params.get("consistent_read") {
-        builder = builder.consistent_read(*consistent_read);
+    if let Some(b) = params.get("consistent_read").and_then(|v| v.as_bool().ok()) {
+        builder = builder.consistent_read(b);
     }
 
     if let Some(limit_val) = params.get("limit") {
-        builder = builder.limit(match limit_val {
-            Value::Integer(i) => *i as i32,
-            _ => return bad_input("limit must be an integer"),
-        });
+        if let Ok(i) = limit_val.as_signed() {
+            builder = builder.limit(i as i32);
+        } else {
+            return bad_input("limit must be an integer");
+        }
     }
 
-    let validation = if let Some(Value::Vec(validation)) = params.get("validation") {
-        Some(
-            extract_validation_args(validation.borrow_ref()?.to_vec())
-                .map_err(|s| AlternatorError::new(AlternatorErrorKind::BadInput(s)))?,
-        )
+    let validation = if let Some(v) = params.get("validation") {
+        if let Ok(vec) = v.borrow_ref::<rune::runtime::Vec>() {
+            Some(
+                extract_validation_args(vec.to_vec())
+                    .map_err(|s| AlternatorError::new(AlternatorErrorKind::BadInput(s)))?,
+            )
+        } else {
+            None
+        }
     } else {
         None
     };
 
     let result = handle_request_with_validation(&ctx, builder, validation, "Scan").await?;
 
-    if let Some(Value::Bool(with_result)) = params.get("with_result") {
-        if *with_result {
-            return Ok(result.to_value().into_result()?);
-        }
+    if params.get("with_result").and_then(|v| v.as_bool().ok()) == Some(true) {
+        return Ok(result.to_value()?);
     }
 
-    Ok(Value::EmptyTuple)
+    Ok(Value::from(()))
 }
 
 /// Marks a list of items as an Alternator string set.
 #[rune::function]
 pub fn string_set(items: Vec<Value>) -> VmResult<Value> {
-    let mut map = HashMap::new();
+    let mut obj = Object::new();
+    let rune_key = rune::vm_try!(rune::alloc::String::try_from(SSET_KEY));
     let items_val = rune::vm_try!(items.to_value());
-    map.insert(SSET_KEY.to_string(), items_val);
-    map.to_value()
+    rune::vm_try!(obj.insert(rune_key, items_val));
+    VmResult::Ok(rune::vm_try!(Value::new(obj)))
 }
 
 /// Marks a list of items as an Alternator number set.
 #[rune::function]
 pub fn number_set(items: Vec<Value>) -> VmResult<Value> {
-    let mut map = HashMap::new();
+    let mut obj = Object::new();
+    let rune_key = rune::vm_try!(rune::alloc::String::try_from(NSET_KEY));
     let items_val = rune::vm_try!(items.to_value());
-    map.insert(NSET_KEY.to_string(), items_val);
-    map.to_value()
+    rune::vm_try!(obj.insert(rune_key, items_val));
+    VmResult::Ok(rune::vm_try!(Value::new(obj)))
 }
 
 /// Marks a list of items as an Alternator binary set.
 #[rune::function]
 pub fn binary_set(items: Vec<Value>) -> VmResult<Value> {
-    let mut map = HashMap::new();
+    let mut obj = Object::new();
+    let rune_key = rune::vm_try!(rune::alloc::String::try_from(BSET_KEY));
     let items_val = rune::vm_try!(items.to_value());
-    map.insert(BSET_KEY.to_string(), items_val);
-    map.to_value()
+    rune::vm_try!(obj.insert(rune_key, items_val));
+    VmResult::Ok(rune::vm_try!(Value::new(obj)))
 }

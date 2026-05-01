@@ -46,7 +46,7 @@ plotters = { version = "0.3", default-features = false, features = ["line_series
 rand = { version = "0.9.4", default-features = false, features = ["small_rng", "std", "thread_rng"] }
 rand_distr = "0.5"
 regex = "1.5"
-rune = "0.13"
+rune = "0.14"
 rust_decimal = "1.36"
 rust-embed = "8"
 scylla = { version = "1.6", features = ["openssl-010", "chrono-04"], optional = true }

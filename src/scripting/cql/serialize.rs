@@ -5,7 +5,8 @@ use crate::scripting::rune_uuid::Uuid;
 use chrono::{NaiveDate, NaiveTime};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use rune::{Any, ToValue, Value};
+use rune::runtime::{Object, OwnedTuple, Vec as RuneVec};
+use rune::{ToValue, Value};
 use scylla::_macro_internal::ColumnType;
 use scylla::frame::response::result::{CollectionType, ColumnSpec, NativeType};
 use scylla::serialize::row::{RowSerializationContext, SerializeRow};
@@ -62,68 +63,55 @@ fn serialize_rune_params(
     columns: &[ColumnSpec<'_>],
     writer: &mut RowWriter<'_>,
 ) -> Result<(), SerializationError> {
-    match value {
-        Value::Tuple(tuple) => {
-            let tuple = tuple.borrow_ref().map_err(|e| {
-                SerializationError::new(CassError(CassErrorKind::Error(e.to_string())))
-            })?;
-            if tuple.len() != columns.len() {
-                return Err(SerializationError::new(CassError(
-                    CassErrorKind::InvalidNumberOfQueryParams,
-                )));
-            }
-            for (v, col) in tuple.iter().zip(columns) {
-                serialize_rune_cell(v, col.typ(), writer)?;
-            }
-            Ok(())
+    if let Ok(tuple) = value.borrow_ref::<OwnedTuple>() {
+        if tuple.len() != columns.len() {
+            return Err(SerializationError::new(CassError(
+                CassErrorKind::InvalidNumberOfQueryParams,
+            )));
         }
-        Value::Vec(vec) => {
-            let vec = vec.borrow_ref().map_err(|e| {
-                SerializationError::new(CassError(CassErrorKind::Error(e.to_string())))
-            })?;
-            for (v, col) in vec.iter().zip(columns) {
-                serialize_rune_cell(v, col.typ(), writer)?;
-            }
-            Ok(())
+        for (v, col) in tuple.iter().zip(columns) {
+            serialize_rune_cell(v, col.typ(), writer)?;
         }
-        Value::Object(obj) => {
-            let obj = obj.borrow_ref().map_err(|e| {
-                SerializationError::new(CassError(CassErrorKind::Error(e.to_string())))
-            })?;
-            for col in columns {
-                let cql_val = match obj.get(col.name()) {
-                    Some(v) => {
-                        to_scylla_value(v, col.typ()).map_err(|e| SerializationError::new(*e))?
-                    }
-                    None => Some(CqlValue::Empty),
-                };
-                cql_val
-                    .serialize(col.typ(), writer.make_cell_writer())
-                    .map_err(SerializationError::new)?;
-            }
-            Ok(())
-        }
-        Value::Struct(obj) => {
-            let obj = obj.borrow_ref().map_err(|e| {
-                SerializationError::new(CassError(CassErrorKind::Error(e.to_string())))
-            })?;
-            for col in columns {
-                let cql_val = match obj.get(col.name()) {
-                    Some(v) => {
-                        to_scylla_value(v, col.typ()).map_err(|e| SerializationError::new(*e))?
-                    }
-                    None => Some(CqlValue::Empty),
-                };
-                cql_val
-                    .serialize(col.typ(), writer.make_cell_writer())
-                    .map_err(SerializationError::new)?;
-            }
-            Ok(())
-        }
-        other => Err(SerializationError::new(CassError(
-            CassErrorKind::InvalidQueryParamsObject(other.type_info().unwrap()),
-        ))),
+        return Ok(());
     }
+    if let Ok(vec) = value.borrow_ref::<RuneVec>() {
+        for (v, col) in vec.iter().zip(columns) {
+            serialize_rune_cell(v, col.typ(), writer)?;
+        }
+        return Ok(());
+    }
+    if let Ok(obj) = value.borrow_ref::<Object>() {
+        for col in columns {
+            let cql_val = match obj.get(col.name()) {
+                Some(v) => {
+                    to_scylla_value(v, col.typ()).map_err(|e| SerializationError::new(*e))?
+                }
+                None => Some(CqlValue::Empty),
+            };
+            cql_val
+                .serialize(col.typ(), writer.make_cell_writer())
+                .map_err(SerializationError::new)?;
+        }
+        return Ok(());
+    }
+    // Handle struct types (rune typed structs)
+    if let Ok(rune::runtime::TypeValue::Struct(s)) = value.as_type_value() {
+        for col in columns {
+            let cql_val = match s.get(col.name()) {
+                Some(v) => {
+                    to_scylla_value(v, col.typ()).map_err(|e| SerializationError::new(*e))?
+                }
+                None => Some(CqlValue::Empty),
+            };
+            cql_val
+                .serialize(col.typ(), writer.make_cell_writer())
+                .map_err(SerializationError::new)?;
+        }
+        return Ok(());
+    }
+    Err(SerializationError::new(CassError(
+        CassErrorKind::InvalidQueryParamsObject(value.type_info()),
+    )))
 }
 
 /// Serializes a single rune value as a CQL cell.
@@ -157,468 +145,460 @@ static DURATION_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 
 fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<CassError>> {
-    match (v, typ) {
-        (Value::Bool(v), ColumnType::Native(NativeType::Boolean)) => {
-            Ok(Some(CqlValue::Boolean(*v)))
-        }
+    // Option (must be checked before inline types)
+    if let Ok(opt) = v.borrow_ref::<Option<Value>>() {
+        return match opt.as_ref() {
+            Some(inner) => to_scylla_value(inner, typ),
+            None => Ok(None),
+        };
+    }
 
-        (Value::Byte(v), ColumnType::Native(NativeType::TinyInt)) => {
-            Ok(Some(CqlValue::TinyInt(*v as i8)))
-        }
-        (Value::Byte(v), ColumnType::Native(NativeType::SmallInt)) => {
-            Ok(Some(CqlValue::SmallInt(*v as i16)))
-        }
-        (Value::Byte(v), ColumnType::Native(NativeType::Int)) => Ok(Some(CqlValue::Int(*v as i32))),
-        (Value::Byte(v), ColumnType::Native(NativeType::BigInt)) => {
-            Ok(Some(CqlValue::BigInt(*v as i64)))
-        }
+    // Bool
+    if let Ok(b) = v.as_bool() {
+        return match typ {
+            ColumnType::Native(NativeType::Boolean) => Ok(Some(CqlValue::Boolean(b))),
+            _ => type_mismatch(v, typ),
+        };
+    }
 
-        (Value::Integer(v), ColumnType::Native(NativeType::TinyInt)) => {
-            convert_int(*v, NativeType::TinyInt, CqlValue::TinyInt)
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::SmallInt)) => {
-            convert_int(*v, NativeType::SmallInt, CqlValue::SmallInt)
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::Int)) => {
-            convert_int(*v, NativeType::Int, CqlValue::Int)
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::BigInt)) => {
-            Ok(Some(CqlValue::BigInt(*v)))
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::Counter)) => {
-            Ok(Some(CqlValue::Counter(scylla::value::Counter(*v))))
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::Timestamp)) => {
-            Ok(Some(CqlValue::Timestamp(scylla::value::CqlTimestamp(*v))))
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::Date)) => match (*v).try_into() {
-            Ok(date) => Ok(Some(CqlValue::Date(CqlDate(date)))),
-            Err(_) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                format!("{v:?}"),
-                "NativeType::Date".to_string(),
-                Some("Invalid date value".to_string()),
-            )))),
-        },
-        (Value::Integer(v), ColumnType::Native(NativeType::Time)) => {
-            Ok(Some(CqlValue::Time(CqlTime(*v))))
-        }
-        (Value::Integer(v), ColumnType::Native(NativeType::Varint)) => Ok(Some(CqlValue::Varint(
-            CqlVarint::from_signed_bytes_be((*v).to_be_bytes().to_vec()),
-        ))),
-        (Value::Integer(v), ColumnType::Native(NativeType::Decimal)) => {
-            Ok(Some(CqlValue::Decimal(
-                scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
-                    (*v).to_be_bytes().to_vec(),
-                    0,
-                ),
-            )))
-        }
+    // Unsigned integer (u64) — byte literals and other unsigned values
+    if let Ok(u) = v.as_unsigned() {
+        return match typ {
+            ColumnType::Native(NativeType::TinyInt) => Ok(Some(CqlValue::TinyInt(u as i8))),
+            ColumnType::Native(NativeType::SmallInt) => Ok(Some(CqlValue::SmallInt(u as i16))),
+            ColumnType::Native(NativeType::Int) => Ok(Some(CqlValue::Int(u as i32))),
+            ColumnType::Native(NativeType::BigInt) => Ok(Some(CqlValue::BigInt(u as i64))),
+            _ => type_mismatch(v, typ),
+        };
+    }
 
-        (Value::Float(v), ColumnType::Native(NativeType::Float)) => {
-            Ok(Some(CqlValue::Float(*v as f32)))
-        }
-        (Value::Float(v), ColumnType::Native(NativeType::Double)) => Ok(Some(CqlValue::Double(*v))),
-        (Value::Float(v), ColumnType::Native(NativeType::Decimal)) => {
-            let decimal = rust_decimal::Decimal::from_f64_retain(*v).unwrap();
-            Ok(Some(CqlValue::Decimal(
-                scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
-                    decimal.mantissa().to_be_bytes().to_vec(),
-                    decimal.scale().try_into().unwrap(),
-                ),
-            )))
-        }
-
-        (Value::String(s), ColumnType::Native(NativeType::Date)) => {
-            let date_str = s.borrow_ref().unwrap();
-            let naive_date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|e| {
-                CassError(CassErrorKind::QueryParamConversion(
+    // Signed integer (i64)
+    if let Ok(i) = v.as_signed() {
+        return match typ {
+            ColumnType::Native(NativeType::TinyInt) => {
+                convert_int(i, NativeType::TinyInt, CqlValue::TinyInt)
+            }
+            ColumnType::Native(NativeType::SmallInt) => {
+                convert_int(i, NativeType::SmallInt, CqlValue::SmallInt)
+            }
+            ColumnType::Native(NativeType::Int) => convert_int(i, NativeType::Int, CqlValue::Int),
+            ColumnType::Native(NativeType::BigInt) => Ok(Some(CqlValue::BigInt(i))),
+            ColumnType::Native(NativeType::Counter) => {
+                Ok(Some(CqlValue::Counter(scylla::value::Counter(i))))
+            }
+            ColumnType::Native(NativeType::Timestamp) => {
+                Ok(Some(CqlValue::Timestamp(scylla::value::CqlTimestamp(i))))
+            }
+            ColumnType::Native(NativeType::Date) => match i.try_into() {
+                Ok(date) => Ok(Some(CqlValue::Date(CqlDate(date)))),
+                Err(_) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                     format!("{v:?}"),
                     "NativeType::Date".to_string(),
-                    Some(format!("{e}")),
-                ))
-            })?;
-            let cql_date = CqlDate::from(naive_date);
-            Ok(Some(CqlValue::Date(cql_date)))
-        }
-        (Value::String(s), ColumnType::Native(NativeType::Time)) => {
-            let time_str = s.borrow_ref().unwrap();
-            let mut time_format = "%H:%M:%S".to_string();
-            if time_str.contains('.') {
-                time_format = format!("{time_format}.%f");
-            }
-            let naive_time = NaiveTime::parse_from_str(&time_str, &time_format).map_err(|e| {
-                Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
-                    "NativeType::Time".to_string(),
-                    Some(format!("{e}")),
+                    Some("Invalid date value".to_string()),
+                )))),
+            },
+            ColumnType::Native(NativeType::Time) => Ok(Some(CqlValue::Time(CqlTime(i)))),
+            ColumnType::Native(NativeType::Varint) => Ok(Some(CqlValue::Varint(
+                CqlVarint::from_signed_bytes_be(i.to_be_bytes().to_vec()),
+            ))),
+            ColumnType::Native(NativeType::Decimal) => Ok(Some(CqlValue::Decimal(
+                scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                    i.to_be_bytes().to_vec(),
+                    0,
+                ),
+            ))),
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // Float (f64)
+    if let Ok(f) = v.as_float() {
+        return match typ {
+            ColumnType::Native(NativeType::Float) => Ok(Some(CqlValue::Float(f as f32))),
+            ColumnType::Native(NativeType::Double) => Ok(Some(CqlValue::Double(f))),
+            ColumnType::Native(NativeType::Decimal) => {
+                let decimal = rust_decimal::Decimal::from_f64_retain(f).unwrap();
+                Ok(Some(CqlValue::Decimal(
+                    scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                        decimal.mantissa().to_be_bytes().to_vec(),
+                        decimal.scale().try_into().unwrap(),
+                    ),
                 )))
-            })?;
-            let cql_time = CqlTime::try_from(naive_time)?;
-            Ok(Some(CqlValue::Time(cql_time)))
-        }
-        (Value::String(s), ColumnType::Native(NativeType::Duration)) => {
-            // TODO: add support for the following 'ISO 8601' format variants:
-            // - ISO 8601 format: P[n]Y[n]M[n]DT[n]H[n]M[n]S or P[n]W
-            // - ISO 8601 alternative format: P[YYYY]-[MM]-[DD]T[hh]:[mm]:[ss]
-            // See: https://opensource.docs.scylladb.com/stable/cql/types.html#working-with-durations
-            let duration_str = s.borrow_ref().unwrap();
-            if duration_str.is_empty() {
-                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
-                    "NativeType::Duration".to_string(),
-                    Some("Duration cannot be empty".to_string()),
-                ))));
             }
-            // NOTE: we parse the duration explicitly because of the 'CqlDuration' type specifics.
-            // It stores only months, days and nanoseconds.
-            // So, we do not translate days to months and hours to days because those are ambiguous
-            let (mut months, mut days, mut nanoseconds) = (0, 0, 0);
-            let mut matches_counter = HashMap::from([
-                ("y", 0),
-                ("mo", 0),
-                ("w", 0),
-                ("d", 0),
-                ("h", 0),
-                ("m", 0),
-                ("s", 0),
-                ("ms", 0),
-                ("us", 0),
-                ("ns", 0),
-            ]);
-            for cap in DURATION_REGEX.captures_iter(&duration_str) {
-                if let Some(m) = cap.name("years") {
-                    months += m.as_str().parse::<i32>().unwrap() * 12;
-                    *matches_counter.entry("y").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("months") {
-                    months += m.as_str().parse::<i32>().unwrap();
-                    *matches_counter.entry("mo").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("weeks") {
-                    days += m.as_str().parse::<i32>().unwrap() * 7;
-                    *matches_counter.entry("w").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("days") {
-                    days += m.as_str().parse::<i32>().unwrap();
-                    *matches_counter.entry("d").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("hours") {
-                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 3_600_000_000_000;
-                    *matches_counter.entry("h").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("minutes") {
-                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 60_000_000_000;
-                    *matches_counter.entry("m").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("seconds") {
-                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000_000_000;
-                    *matches_counter.entry("s").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("millis") {
-                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000_000;
-                    *matches_counter.entry("ms").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("micros") {
-                    nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000;
-                    *matches_counter.entry("us").or_insert(1) += 1;
-                } else if let Some(m) = cap.name("nanoseconds") {
-                    nanoseconds += m.as_str().parse::<i64>().unwrap();
-                    *matches_counter.entry("ns").or_insert(1) += 1;
-                } else if cap.name("invalid").is_some() {
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // String
+    if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+        return match typ {
+            ColumnType::Native(NativeType::Date) => {
+                let naive_date =
+                    NaiveDate::parse_from_str(s.as_str(), "%Y-%m-%d").map_err(|e| {
+                        CassError(CassErrorKind::QueryParamConversion(
+                            format!("{v:?}"),
+                            "NativeType::Date".to_string(),
+                            Some(format!("{e}")),
+                        ))
+                    })?;
+                Ok(Some(CqlValue::Date(CqlDate::from(naive_date))))
+            }
+            ColumnType::Native(NativeType::Time) => {
+                let mut time_format = "%H:%M:%S".to_string();
+                if s.as_str().contains('.') {
+                    time_format = format!("{time_format}.%f");
+                }
+                let naive_time =
+                    NaiveTime::parse_from_str(s.as_str(), &time_format).map_err(|e| {
+                        Box::new(CassError(CassErrorKind::QueryParamConversion(
+                            format!("{v:?}"),
+                            "NativeType::Time".to_string(),
+                            Some(format!("{e}")),
+                        )))
+                    })?;
+                Ok(Some(CqlValue::Time(CqlTime::try_from(naive_time)?)))
+            }
+            ColumnType::Native(NativeType::Duration) => {
+                // TODO: add support for the following 'ISO 8601' format variants:
+                // - ISO 8601 format: P[n]Y[n]M[n]DT[n]H[n]M[n]S or P[n]W
+                // - ISO 8601 alternative format: P[YYYY]-[MM]-[DD]T[hh]:[mm]:[ss]
+                // See: https://opensource.docs.scylladb.com/stable/cql/types.html#working-with-durations
+                let duration_str = s.as_str();
+                if duration_str.is_empty() {
                     return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                         format!("{v:?}"),
                         "NativeType::Duration".to_string(),
-                        Some("Got invalid duration value".to_string()),
+                        Some("Duration cannot be empty".to_string()),
                     ))));
                 }
+                // NOTE: we parse the duration explicitly because of the 'CqlDuration' type specifics.
+                // It stores only months, days and nanoseconds.
+                // So, we do not translate days to months and hours to days because those are ambiguous
+                let (mut months, mut days, mut nanoseconds) = (0, 0, 0);
+                let mut matches_counter = HashMap::from([
+                    ("y", 0),
+                    ("mo", 0),
+                    ("w", 0),
+                    ("d", 0),
+                    ("h", 0),
+                    ("m", 0),
+                    ("s", 0),
+                    ("ms", 0),
+                    ("us", 0),
+                    ("ns", 0),
+                ]);
+                for cap in DURATION_REGEX.captures_iter(duration_str) {
+                    if let Some(m) = cap.name("years") {
+                        months += m.as_str().parse::<i32>().unwrap() * 12;
+                        *matches_counter.entry("y").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("months") {
+                        months += m.as_str().parse::<i32>().unwrap();
+                        *matches_counter.entry("mo").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("weeks") {
+                        days += m.as_str().parse::<i32>().unwrap() * 7;
+                        *matches_counter.entry("w").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("days") {
+                        days += m.as_str().parse::<i32>().unwrap();
+                        *matches_counter.entry("d").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("hours") {
+                        nanoseconds += m.as_str().parse::<i64>().unwrap() * 3_600_000_000_000;
+                        *matches_counter.entry("h").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("minutes") {
+                        nanoseconds += m.as_str().parse::<i64>().unwrap() * 60_000_000_000;
+                        *matches_counter.entry("m").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("seconds") {
+                        nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000_000_000;
+                        *matches_counter.entry("s").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("millis") {
+                        nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000_000;
+                        *matches_counter.entry("ms").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("micros") {
+                        nanoseconds += m.as_str().parse::<i64>().unwrap() * 1_000;
+                        *matches_counter.entry("us").or_insert(1) += 1;
+                    } else if let Some(m) = cap.name("nanoseconds") {
+                        nanoseconds += m.as_str().parse::<i64>().unwrap();
+                        *matches_counter.entry("ns").or_insert(1) += 1;
+                    } else if cap.name("invalid").is_some() {
+                        return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                            format!("{v:?}"),
+                            "NativeType::Duration".to_string(),
+                            Some("Got invalid duration value".to_string()),
+                        ))));
+                    }
+                }
+                if matches_counter.values().all(|&v| v == 0) {
+                    return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                        format!("{v:?}"),
+                        "NativeType::Duration".to_string(),
+                        Some("None time units were found".to_string()),
+                    ))));
+                }
+                let duplicated_units: Vec<&str> = matches_counter
+                    .iter()
+                    .filter(|&(_, &count)| count > 1)
+                    .map(|(&unit, _)| unit)
+                    .collect();
+                if !duplicated_units.is_empty() {
+                    return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                        format!("{v:?}"),
+                        "NativeType::Duration".to_string(),
+                        Some(format!(
+                            "Got multiple matches for time unit(s): {}",
+                            duplicated_units.join(", ")
+                        )),
+                    ))));
+                }
+                Ok(Some(CqlValue::Duration(CqlDuration {
+                    months,
+                    days,
+                    nanoseconds,
+                })))
             }
-            if matches_counter.values().all(|&v| v == 0) {
-                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
-                    "NativeType::Duration".to_string(),
-                    Some("None time units were found".to_string()),
-                ))));
+            ColumnType::Native(NativeType::Varint) => {
+                if !s.as_str().chars().all(|c| c.is_ascii_digit()) {
+                    return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                        format!("{v:?}"),
+                        "NativeType::Varint".to_string(),
+                        Some("Input contains non-digit characters".to_string()),
+                    ))));
+                }
+                let byte_vector: Vec<u8> = s
+                    .as_str()
+                    .chars()
+                    .map(|c| c.to_digit(10).expect("Invalid digit") as u8)
+                    .collect();
+                Ok(Some(CqlValue::Varint(
+                    scylla::value::CqlVarint::from_signed_bytes_be(byte_vector),
+                )))
             }
-            let duplicated_units: Vec<&str> = matches_counter
-                .iter()
-                .filter(|&(_, &count)| count > 1)
-                .map(|(&unit, _)| unit)
-                .collect();
-            if !duplicated_units.is_empty() {
-                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
-                    "NativeType::Duration".to_string(),
-                    Some(format!(
-                        "Got multiple matches for time unit(s): {}",
-                        duplicated_units.join(", ")
-                    )),
-                ))));
-            }
-            let cql_duration = CqlDuration {
-                months,
-                days,
-                nanoseconds,
-            };
-            Ok(Some(CqlValue::Duration(cql_duration)))
-        }
-
-        (Value::String(s), ColumnType::Native(NativeType::Varint)) => {
-            let varint_str = s.borrow_ref().unwrap();
-            if !varint_str.chars().all(|c| c.is_ascii_digit()) {
-                return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
-                    "NativeType::Varint".to_string(),
-                    Some("Input contains non-digit characters".to_string()),
-                ))));
-            }
-            let byte_vector: Vec<u8> = varint_str
-                .chars()
-                .map(|c| c.to_digit(10).expect("Invalid digit") as u8)
-                .collect();
-            Ok(Some(CqlValue::Varint(
-                scylla::value::CqlVarint::from_signed_bytes_be(byte_vector),
-            )))
-        }
-        (Value::String(s), ColumnType::Native(NativeType::Timeuuid)) => {
-            let timeuuid_str = s.borrow_ref().unwrap();
-            let timeuuid = CqlTimeuuid::from_str(timeuuid_str.as_str());
-            match timeuuid {
+            ColumnType::Native(NativeType::Timeuuid) => match CqlTimeuuid::from_str(s.as_str()) {
                 Ok(timeuuid) => Ok(Some(CqlValue::Timeuuid(timeuuid))),
                 Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                     format!("{v:?}"),
                     "NativeType::Timeuuid".to_string(),
                     Some(format!("{e}")),
                 )))),
+            },
+            ColumnType::Native(NativeType::Text) | ColumnType::Native(NativeType::Ascii) => {
+                Ok(Some(CqlValue::Text(s.as_str().to_string())))
             }
-        }
-        (
-            Value::String(v),
-            ColumnType::Native(NativeType::Text) | ColumnType::Native(NativeType::Ascii),
-        ) => Ok(Some(CqlValue::Text(
-            v.borrow_ref().unwrap().as_str().to_string(),
-        ))),
-        (Value::String(s), ColumnType::Native(NativeType::Inet)) => {
-            let ipaddr_str = s.borrow_ref().unwrap();
-            let ipaddr = IpAddr::from_str(ipaddr_str.as_str());
-            match ipaddr {
+            ColumnType::Native(NativeType::Inet) => match IpAddr::from_str(s.as_str()) {
                 Ok(ipaddr) => Ok(Some(CqlValue::Inet(ipaddr))),
                 Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
                     format!("{v:?}"),
                     "NativeType::Inet".to_string(),
                     Some(format!("{e}")),
                 )))),
+            },
+            ColumnType::Native(NativeType::Decimal) => {
+                let decimal = rust_decimal::Decimal::from_str_exact(s.as_str()).unwrap();
+                Ok(Some(CqlValue::Decimal(
+                    scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
+                        decimal.mantissa().to_be_bytes().to_vec(),
+                        decimal.scale().try_into().unwrap(),
+                    ),
+                )))
             }
-        }
-        (Value::String(s), ColumnType::Native(NativeType::Decimal)) => {
-            let dec_str = s.borrow_ref().unwrap();
-            let decimal = rust_decimal::Decimal::from_str_exact(&dec_str).unwrap();
-            Ok(Some(CqlValue::Decimal(
-                scylla::value::CqlDecimal::from_signed_be_bytes_and_exponent(
-                    decimal.mantissa().to_be_bytes().to_vec(),
-                    decimal.scale().try_into().unwrap(),
-                ),
-            )))
-        }
-        (Value::Bytes(v), ColumnType::Native(NativeType::Blob)) => {
-            Ok(Some(CqlValue::Blob(v.borrow_ref().unwrap().to_vec())))
-        }
-        (Value::Vec(v), ColumnType::Native(NativeType::Blob)) => {
-            let v: Vec<Value> = v.borrow_ref().unwrap().to_vec();
-            let byte_vec: Vec<u8> = v
-                .into_iter()
-                .map(|value| value.as_byte().unwrap())
-                .collect();
-            Ok(Some(CqlValue::Blob(byte_vec)))
-        }
-        (Value::Option(v), typ) => match v.borrow_ref().unwrap().as_ref() {
-            Some(v) => to_scylla_value(v, typ),
-            None => Ok(None),
-        },
-        (Value::Tuple(v), ColumnType::Tuple(tuple)) => {
-            let v = v.borrow_ref().unwrap();
-            let mut elements = Vec::with_capacity(v.len());
-            for (i, current_element) in v.iter().enumerate() {
-                let element = to_scylla_value(current_element, &tuple[i])?;
-                elements.push(element);
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // Bytes (rune::runtime::Bytes)
+    if let Ok(b) = v.borrow_ref::<rune::runtime::Bytes>() {
+        return match typ {
+            ColumnType::Native(NativeType::Blob) => Ok(Some(CqlValue::Blob(b.to_vec()))),
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // Vec (rune::runtime::Vec)
+    if let Ok(vec) = v.borrow_ref::<RuneVec>() {
+        return match typ {
+            ColumnType::Native(NativeType::Blob) => {
+                let byte_vec: Vec<u8> =
+                    vec.iter().map(|v| v.as_unsigned().unwrap() as u8).collect();
+                Ok(Some(CqlValue::Blob(byte_vec)))
             }
-            Ok(Some(CqlValue::Tuple(elements)))
-        }
-        (Value::Vec(v), ColumnType::Tuple(tuple)) => {
-            let v = v.borrow_ref().unwrap();
-            let mut elements = Vec::with_capacity(v.len());
-            for (i, current_element) in v.iter().enumerate() {
-                let element = to_scylla_value(current_element, &tuple[i])?;
-                elements.push(element);
+            ColumnType::Tuple(tuple) => {
+                let mut elements = Vec::with_capacity(vec.len());
+                for (i, current_element) in vec.iter().enumerate() {
+                    elements.push(to_scylla_value(current_element, &tuple[i])?);
+                }
+                Ok(Some(CqlValue::Tuple(elements)))
             }
-            Ok(Some(CqlValue::Tuple(elements)))
-        }
-        (Value::Vec(v), ColumnType::Vector { typ, .. }) => {
-            let v = v.borrow_ref().unwrap();
-            let elements = v
-                .as_ref()
-                .iter()
-                .map(|v| {
-                    to_scylla_value(v, typ).and_then(|opt| {
-                        opt.ok_or_else(|| {
-                            Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                format!("{v:?}"),
-                                "ColumnType::Vector".to_string(),
-                                None,
-                            )))
+            ColumnType::Vector { typ: elem_typ, .. } => {
+                let elements = vec
+                    .iter()
+                    .map(|v| {
+                        to_scylla_value(v, elem_typ).and_then(|opt| {
+                            opt.ok_or_else(|| {
+                                Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                    format!("{v:?}"),
+                                    "ColumnType::Vector".to_string(),
+                                    None,
+                                )))
+                            })
                         })
                     })
-                })
-                .try_collect()?;
-            Ok(Some(CqlValue::Vector(elements)))
-        }
-        (
-            Value::Vec(v),
+                    .try_collect()?;
+                Ok(Some(CqlValue::Vector(elements)))
+            }
             ColumnType::Collection {
-                frozen: _,
                 typ: CollectionType::List(elt),
-            },
-        ) => {
-            let v = v.borrow_ref().unwrap();
-            let elements = v
-                .as_ref()
-                .iter()
-                .map(|v| {
-                    to_scylla_value(v, elt).and_then(|opt| {
-                        opt.ok_or_else(|| {
-                            Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                format!("{v:?}"),
-                                "CollectionType::List".to_string(),
-                                None,
-                            )))
+                ..
+            } => {
+                let elements = vec
+                    .iter()
+                    .map(|v| {
+                        to_scylla_value(v, elt).and_then(|opt| {
+                            opt.ok_or_else(|| {
+                                Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                    format!("{v:?}"),
+                                    "CollectionType::List".to_string(),
+                                    None,
+                                )))
+                            })
                         })
                     })
-                })
-                .try_collect()?;
-            Ok(Some(CqlValue::List(elements)))
-        }
-        (
-            Value::Vec(v),
+                    .try_collect()?;
+                Ok(Some(CqlValue::List(elements)))
+            }
             ColumnType::Collection {
-                frozen: _,
                 typ: CollectionType::Set(elt),
-            },
-        ) => {
-            let v = v.borrow_ref().unwrap();
-            let elements = v
-                .as_ref()
-                .iter()
-                .map(|v| {
-                    to_scylla_value(v, elt).and_then(|opt| {
-                        opt.ok_or_else(|| {
-                            Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                format!("{v:?}"),
-                                "CollectionType::Set".to_string(),
-                                None,
-                            )))
+                ..
+            } => {
+                let elements = vec
+                    .iter()
+                    .map(|v| {
+                        to_scylla_value(v, elt).and_then(|opt| {
+                            opt.ok_or_else(|| {
+                                Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                    format!("{v:?}"),
+                                    "CollectionType::Set".to_string(),
+                                    None,
+                                )))
+                            })
                         })
                     })
-                })
-                .try_collect()?;
-            Ok(Some(CqlValue::Set(elements)))
-        }
-        (
-            Value::Vec(v),
+                    .try_collect()?;
+                Ok(Some(CqlValue::Set(elements)))
+            }
             ColumnType::Collection {
-                frozen: _,
                 typ: CollectionType::Map(key_elt, value_elt),
-            },
-        ) => {
-            let v = v.borrow_ref().unwrap();
-            let mut map_vec = Vec::with_capacity(v.len());
-            for tuple in v.iter() {
-                match tuple {
-                    Value::Tuple(tuple) if tuple.borrow_ref().unwrap().len() == 2 => {
-                        let tuple = tuple.borrow_ref().unwrap();
-                        let key = to_scylla_value(tuple.first().unwrap(), key_elt)?.unwrap();
-                        let value = to_scylla_value(tuple.get(1).unwrap(), value_elt)?.unwrap();
-                        map_vec.push((key, value));
-                    }
-                    _ => {
+                ..
+            } => {
+                let mut map_vec = Vec::with_capacity(vec.len());
+                for item in vec.iter() {
+                    if let Ok(tuple) = item.borrow_ref::<OwnedTuple>() {
+                        if tuple.len() == 2 {
+                            let key = to_scylla_value(tuple.first().unwrap(), key_elt)?.unwrap();
+                            let value = to_scylla_value(tuple.get(1).unwrap(), value_elt)?.unwrap();
+                            map_vec.push((key, value));
+                        } else {
+                            return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+                                format!("{item:?}"),
+                                "CollectionType::Map".to_string(),
+                                None,
+                            ))));
+                        }
+                    } else {
                         return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                            format!("{tuple:?}"),
+                            format!("{item:?}"),
                             "CollectionType::Map".to_string(),
                             None,
                         ))));
                     }
                 }
+                Ok(Some(CqlValue::Map(map_vec)))
             }
-            Ok(Some(CqlValue::Map(map_vec)))
-        }
-        (
-            Value::Object(obj),
-            ColumnType::Collection {
-                frozen: _,
-                typ: CollectionType::Map(key_elt, value_elt),
-            },
-        ) => {
-            let obj = obj.borrow_ref().unwrap();
-            let mut map_vec = Vec::with_capacity(obj.keys().len());
-            for (k, v) in obj.iter() {
-                let key = String::from(k.as_str());
-                let key = to_scylla_value(&(key.to_value().unwrap()), key_elt)?.unwrap();
-                let value = to_scylla_value(v, value_elt)?.unwrap();
-                map_vec.push((key, value));
-            }
-            Ok(Some(CqlValue::Map(map_vec)))
-        }
-        (
-            Value::Object(v),
-            ColumnType::UserDefinedType {
-                frozen: _,
-                definition,
-            },
-        ) => {
-            let obj = v.borrow_ref().unwrap();
-            let field_types: Vec<(String, ColumnType)> = definition
-                .field_types
-                .iter()
-                .map(|(name, typ)| (name.to_string(), typ.clone()))
-                .collect();
-            let fields = read_fields(|s| obj.get(s), &field_types)?;
-            Ok(Some(CqlValue::UserDefinedType {
-                name: definition.name.to_string(),
-                keyspace: definition.keyspace.to_string(),
-                fields,
-            }))
-        }
-        (
-            Value::Struct(v),
-            ColumnType::UserDefinedType {
-                frozen: _,
-                definition,
-            },
-        ) => {
-            let obj = v.borrow_ref().unwrap();
-            let field_types: Vec<(String, ColumnType)> = definition
-                .field_types
-                .iter()
-                .map(|(name, typ)| (name.to_string(), typ.clone()))
-                .collect();
-            let fields = read_fields(|s| obj.get(s), &field_types)?;
-            Ok(Some(CqlValue::UserDefinedType {
-                name: definition.name.to_string(),
-                keyspace: definition.keyspace.to_string(),
-                fields,
-            }))
-        }
-
-        (Value::Any(obj), ColumnType::Native(NativeType::Uuid)) => {
-            let obj = obj.borrow_ref().unwrap();
-            let h = obj.type_hash();
-            if h == Uuid::type_hash() {
-                let uuid: &Uuid = obj.downcast_borrow_ref().unwrap();
-                Ok(Some(CqlValue::Uuid(uuid.0)))
-            } else {
-                Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
-                    "NativeType::Uuid".to_string(),
-                    None,
-                ))))
-            }
-        }
-        (value, typ) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-            format!("{value:?}"),
-            format!("{typ:?}").to_string(),
-            None,
-        )))),
+            _ => type_mismatch(v, typ),
+        };
     }
+
+    // OwnedTuple
+    if let Ok(tuple) = v.borrow_ref::<OwnedTuple>() {
+        return match typ {
+            ColumnType::Tuple(types) => {
+                let mut elements = Vec::with_capacity(tuple.len());
+                for (i, current_element) in tuple.iter().enumerate() {
+                    elements.push(to_scylla_value(current_element, &types[i])?);
+                }
+                Ok(Some(CqlValue::Tuple(elements)))
+            }
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // Object
+    if let Ok(obj) = v.borrow_ref::<Object>() {
+        return match typ {
+            ColumnType::Collection {
+                typ: CollectionType::Map(key_elt, value_elt),
+                ..
+            } => {
+                let mut map_vec = Vec::with_capacity(obj.keys().len());
+                for (k, val) in obj.iter() {
+                    let key = String::from(k.as_str());
+                    let key = to_scylla_value(&key.to_value().unwrap(), key_elt)?.unwrap();
+                    let value = to_scylla_value(val, value_elt)?.unwrap();
+                    map_vec.push((key, value));
+                }
+                Ok(Some(CqlValue::Map(map_vec)))
+            }
+            ColumnType::UserDefinedType { definition, .. } => {
+                let field_types: Vec<(String, ColumnType)> = definition
+                    .field_types
+                    .iter()
+                    .map(|(name, typ)| (name.to_string(), typ.clone()))
+                    .collect();
+                let fields = read_fields(|s| obj.get(s), &field_types)?;
+                Ok(Some(CqlValue::UserDefinedType {
+                    name: definition.name.to_string(),
+                    keyspace: definition.keyspace.to_string(),
+                    fields,
+                }))
+            }
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // Struct (rune typed struct)
+    if let Ok(rune::runtime::TypeValue::Struct(s)) = v.as_type_value() {
+        return match typ {
+            ColumnType::UserDefinedType { definition, .. } => {
+                let field_types: Vec<(String, ColumnType)> = definition
+                    .field_types
+                    .iter()
+                    .map(|(name, typ)| (name.to_string(), typ.clone()))
+                    .collect();
+                let fields = read_fields(|name| s.get(name), &field_types)?;
+                Ok(Some(CqlValue::UserDefinedType {
+                    name: definition.name.to_string(),
+                    keyspace: definition.keyspace.to_string(),
+                    fields,
+                }))
+            }
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    // UUID (custom Rune Any type)
+    if let Ok(uuid) = v.borrow_ref::<Uuid>() {
+        return match typ {
+            ColumnType::Native(NativeType::Uuid) => Ok(Some(CqlValue::Uuid(uuid.0))),
+            _ => type_mismatch(v, typ),
+        };
+    }
+
+    type_mismatch(v, typ)
+}
+
+fn type_mismatch(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<CassError>> {
+    Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
+        format!("{v:?}"),
+        format!("{typ:?}").to_string(),
+        None,
+    ))))
 }
 
 fn convert_int<T: TryFrom<i64>, R>(
@@ -655,7 +635,7 @@ mod tests {
 
     use rstest::rstest;
     use rune::alloc::String as RuneString;
-    use rune::runtime::{Object, Shared, Vec as RuneVec};
+    use rune::runtime::{Object, Vec as RuneVec};
     use scylla::frame::response::result::TableSpec;
     use scylla::serialize::row::RowSerializationContext;
     use scylla::serialize::writers::RowWriter;
@@ -665,19 +645,19 @@ mod tests {
     // ── helpers ──────────────────────────────────────────────────────
 
     fn rune_string(s: &str) -> Value {
-        Value::String(Shared::new(RuneString::try_from(s).unwrap()).unwrap())
+        Value::new(RuneString::try_from(s).unwrap()).unwrap()
     }
 
     fn rune_int(i: i64) -> Value {
-        Value::Integer(i)
+        Value::from(i)
     }
 
     fn rune_float(f: f64) -> Value {
-        Value::Float(f)
+        Value::from(f)
     }
 
     fn rune_bool(b: bool) -> Value {
-        Value::Bool(b)
+        Value::from(b)
     }
 
     fn rune_vec(items: Vec<Value>) -> Value {
@@ -685,7 +665,7 @@ mod tests {
         for item in items {
             v.push(item).unwrap();
         }
-        Value::Vec(Shared::new(v).unwrap())
+        Value::vec(v.into_inner()).unwrap()
     }
 
     fn rune_tuple(items: Vec<Value>) -> Value {
@@ -693,7 +673,7 @@ mod tests {
         for item in items {
             v.try_push(item).unwrap();
         }
-        Value::Tuple(Shared::new(rune::runtime::OwnedTuple::try_from(v).unwrap()).unwrap())
+        Value::new(rune::runtime::OwnedTuple::try_from(v).unwrap()).unwrap()
     }
 
     fn rune_object(pairs: Vec<(&str, Value)>) -> Value {
@@ -701,7 +681,7 @@ mod tests {
         for (k, v) in pairs {
             obj.insert(RuneString::try_from(k).unwrap(), v).unwrap();
         }
-        Value::Object(Shared::new(obj).unwrap())
+        Value::new(obj).unwrap()
     }
 
     fn col_spec<'a>(name: &'a str, typ: ColumnType<'a>) -> ColumnSpec<'a> {
@@ -894,14 +874,14 @@ mod tests {
 
     #[test]
     fn test_to_scylla_value_option_none() {
-        let val = Value::Option(Shared::new(None).unwrap());
+        let val = Value::try_from(None::<Value>).unwrap();
         let result = to_scylla_value(&val, &ColumnType::Native(NativeType::Int));
         assert_eq!(result.unwrap(), None);
     }
 
     #[test]
     fn test_to_scylla_value_option_some() {
-        let val = Value::Option(Shared::new(Some(rune_int(42))).unwrap());
+        let val = Value::try_from(Some(rune_int(42))).unwrap();
         let result = to_scylla_value(&val, &ColumnType::Native(NativeType::Int));
         assert_eq!(result.unwrap(), Some(CqlValue::Int(42)));
     }
@@ -910,6 +890,15 @@ mod tests {
     fn test_to_scylla_value_type_mismatch() {
         let result = to_scylla_value(&rune_string("hello"), &ColumnType::Native(NativeType::Int));
         assert!(result.is_err());
+    }
+
+    // ── to_scylla_value tests (blob) ────────────────────────────────
+
+    #[test]
+    fn test_to_scylla_value_blob_from_rune_bytes() {
+        let bytes_val = rune::to_value(vec![1u8, 2u8, 3u8]).unwrap();
+        let result = to_scylla_value(&bytes_val, &ColumnType::Native(NativeType::Blob)).unwrap();
+        assert_eq!(result, Some(CqlValue::Blob(vec![1u8, 2u8, 3u8])));
     }
 
     // ── to_scylla_value tests (collections) ─────────────────────────
@@ -1259,10 +1248,7 @@ mod tests {
         #[case] ns: i64,
     ) {
         let expected = format!("{mo:?}mo{d:?}d{ns:?}ns");
-        let duration_rune_str = Value::String(
-            Shared::new(RuneString::try_from(input).expect("Failed to create RuneString"))
-                .expect("Failed to create Shared RuneString"),
-        );
+        let duration_rune_str = rune_string(input.as_str());
         let actual = to_scylla_value(
             &duration_rune_str,
             &ColumnType::Native(NativeType::Duration),
@@ -1281,10 +1267,7 @@ mod tests {
     #[case("fake")]
     #[case("1d2h3m4h")]
     fn test_to_scylla_value_duration_neg(#[case] input: String) {
-        let duration_rune_str = Value::String(
-            Shared::new(RuneString::try_from(input.clone()).expect("Failed to create RuneString"))
-                .expect("Failed to create Shared RuneString"),
-        );
+        let duration_rune_str = rune_string(input.as_str());
         let actual = to_scylla_value(
             &duration_rune_str,
             &ColumnType::Native(NativeType::Duration),

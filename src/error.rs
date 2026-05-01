@@ -2,7 +2,7 @@ use crate::scripting::db_error::DbError;
 use hdrhistogram::serialization::interval_log::IntervalLogWriterError;
 use hdrhistogram::serialization::V2DeflateSerializeError;
 use rune::alloc;
-use rune::runtime::{AccessError, VmError};
+use rune::runtime::{AccessError, RuntimeError, VmError};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -55,6 +55,9 @@ pub enum LatteError {
 
     #[error("Rune AccessError: {0}")]
     RuneAccessError(#[from] AccessError),
+
+    #[error("Rune runtime error: {0}")]
+    RuneRuntimeError(#[from] RuntimeError),
 }
 
 impl From<DbError> for LatteError {

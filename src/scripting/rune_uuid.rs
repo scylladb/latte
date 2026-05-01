@@ -20,9 +20,9 @@ impl Uuid {
         Uuid(builder.into_uuid())
     }
 
-    #[rune::function(protocol = STRING_DISPLAY)]
+    #[rune::function(protocol = DISPLAY_FMT)]
     pub fn string_display(&self, f: &mut rune::runtime::Formatter) -> VmResult<()> {
-        vm_write!(f, "{}", self.0);
+        let _ = vm_write!(f, "{}", self.0);
         VmResult::Ok(())
     }
 }

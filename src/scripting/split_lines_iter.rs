@@ -92,43 +92,53 @@ pub fn read_split_lines_iter(
     let mut maxsplit = -1;
     let mut do_trim = true;
     let mut skip_empty = true;
+    let as_str = |v: &Value| -> Option<String> {
+        v.borrow_ref::<rune::alloc::String>()
+            .ok()
+            .map(|s| s.as_str().to_string())
+    };
+    let as_int = |v: &Value| v.as_signed().ok();
+    let as_bool = |v: &Value| v.as_bool().ok();
     match params.as_slice() {
         // (str): delimiter
-        [Value::String(custom_delimiter)] => {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
+        [a] if as_str(a).is_some() => {
+            delimiter = as_str(a).unwrap();
         }
         // (int): maxsplit
-        [Value::Integer(custom_maxsplit)] => {
-            maxsplit = *custom_maxsplit;
+        [a] if as_int(a).is_some() => {
+            maxsplit = as_int(a).unwrap();
         }
         // (bool): do_trim
-        [Value::Bool(custom_do_trim)] => {
-            do_trim = *custom_do_trim;
+        [a] if as_bool(a).is_some() => {
+            do_trim = as_bool(a).unwrap();
         }
         // (bool, bool): do_trim, skip_empty
-        [Value::Bool(custom_do_trim), Value::Bool(custom_skip_empty)] => {
-            do_trim = *custom_do_trim;
-            skip_empty = *custom_skip_empty;
+        [a, b] if as_bool(a).is_some() && as_bool(b).is_some() => {
+            do_trim = as_bool(a).unwrap();
+            skip_empty = as_bool(b).unwrap();
         }
         // (str, int): delimiter, maxsplit
-        [Value::String(custom_delimiter), Value::Integer(custom_maxsplit)] => {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-            maxsplit = *custom_maxsplit;
+        [a, b] if as_str(a).is_some() && as_int(b).is_some() => {
+            delimiter = as_str(a).unwrap();
+            maxsplit = as_int(b).unwrap();
         }
         // (str, int, bool): delimiter, maxsplit, do_trim
-        [Value::String(custom_delimiter), Value::Integer(custom_maxsplit), Value::Bool(custom_do_trim)] =>
-        {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-            maxsplit = *custom_maxsplit;
-            do_trim = *custom_do_trim;
+        [a, b, c] if as_str(a).is_some() && as_int(b).is_some() && as_bool(c).is_some() => {
+            delimiter = as_str(a).unwrap();
+            maxsplit = as_int(b).unwrap();
+            do_trim = as_bool(c).unwrap();
         }
         // (str, int, bool, bool): delimiter, maxsplit, do_trim, skip_empty
-        [Value::String(custom_delimiter), Value::Integer(custom_maxsplit), Value::Bool(custom_do_trim), Value::Bool(custom_skip_empty)] =>
+        [a, b, c, d]
+            if as_str(a).is_some()
+                && as_int(b).is_some()
+                && as_bool(c).is_some()
+                && as_bool(d).is_some() =>
         {
-            delimiter = custom_delimiter.borrow_ref().unwrap().to_string();
-            maxsplit = *custom_maxsplit;
-            do_trim = *custom_do_trim;
-            skip_empty = *custom_skip_empty;
+            delimiter = as_str(a).unwrap();
+            maxsplit = as_int(b).unwrap();
+            do_trim = as_bool(c).unwrap();
+            skip_empty = as_bool(d).unwrap();
         }
         _ => panic!("Invalid arguments for read_split_lines_iter"),
     }
