@@ -68,14 +68,17 @@ jobs:
 
           docker run -d --name scylladb-node1 \
             -p 9042:9042 \
+            -p 8000:8000 \
             ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
-            --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0
+            --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0 \
+            --alternator-port 8000 --alternator-write-isolation always
           wait_for_cql scylladb-node1
           log_resources "after scylladb-node1"
 
           docker run -d --name scylladb-node2 \
             ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
             --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0 \
+            --alternator-port 8000 --alternator-write-isolation always \
             --seeds="$(docker inspect --format='{{ .NetworkSettings.Networks.bridge.IPAddress }}' scylladb-node1)"
           wait_for_cql scylladb-node2
           log_resources "after scylladb-node2"
@@ -83,6 +86,7 @@ jobs:
           docker run -d --name scylladb-node3 \
             ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
             --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0 \
+            --alternator-port 8000 --alternator-write-isolation always \
             --seeds="$(docker inspect --format='{{ .NetworkSettings.Networks.bridge.IPAddress }}' scylladb-node1)"
           wait_for_cql scylladb-node3
           log_resources "after scylladb-node3"
@@ -91,4 +95,5 @@ jobs:
         env:
           SCYLLA_TEST_HOST: "127.0.0.1"
           SCYLLA_TEST_PORT: "9042"
+          SCYLLA_ALTERNATOR_TEST_PORT: "8000"
         run: cargo test --test integration_test -- --ignored --nocapture

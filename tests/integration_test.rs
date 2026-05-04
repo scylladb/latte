@@ -8,28 +8,37 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 const CQL_PORT: u16 = 9042;
+const ALTERNATOR_PORT: u16 = 8000;
 
 struct ScyllaDb {
     _container: Option<ContainerAsync<GenericImage>>,
     host: String,
-    port: u16,
+    cql_port: u16,
+    alternator_port: u16,
 }
 
 type StartResult = Result<ScyllaDb, String>;
 
-static LATTE_BUILT: OnceLock<bool> = OnceLock::new();
-
 async fn start_scylla() -> StartResult {
     if let Ok(host) = std::env::var("SCYLLA_TEST_HOST") {
-        let port = std::env::var("SCYLLA_TEST_PORT")
+        let cql_port = std::env::var("SCYLLA_TEST_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(CQL_PORT);
-        eprintln!("Using pre-existing ScyllaDB at {}:{}", host, port);
+        let alternator_port = std::env::var("SCYLLA_ALTERNATOR_TEST_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(ALTERNATOR_PORT);
+
+        eprintln!(
+            "Using pre-existing ScyllaDB at {} (CQL: {}, Alternator: {})",
+            host, cql_port, alternator_port
+        );
         return Ok(ScyllaDb {
             _container: None,
             host,
-            port,
+            cql_port,
+            alternator_port,
         });
     }
 
@@ -40,6 +49,7 @@ async fn start_scylla() -> StartResult {
 
     let container = GenericImage::new(&image_registry, &image_tag)
         .with_exposed_port(CQL_PORT.tcp())
+        .with_exposed_port(ALTERNATOR_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stderr("serving"))
         .with_cmd(vec![
             "--smp".to_string(),
@@ -52,29 +62,40 @@ async fn start_scylla() -> StartResult {
             "0".to_string(),
             "--broadcast-rpc-address".to_string(), // Avoids Latte trying to connect to the container's internal IP
             "127.0.0.1".to_string(),
+            "--alternator-port".to_string(),
+            ALTERNATOR_PORT.to_string(),
+            "--alternator-write-isolation".to_string(),
+            "always".to_string(),
         ])
         .with_startup_timeout(Duration::from_secs(120))
         .start()
         .await
         .map_err(|e| format!("failed to start ScyllaDB container: {e}"))?;
 
-    let port = container
+    let cql_port = container
         .get_host_port_ipv4(CQL_PORT.tcp())
         .await
-        .map_err(|e| format!("failed to get mapped port: {e}"))?;
+        .map_err(|e| format!("failed to get mapped CQL port: {e}"))?;
+
+    let alternator_port = container
+        .get_host_port_ipv4(ALTERNATOR_PORT.tcp())
+        .await
+        .map_err(|e| format!("failed to get mapped Alternator port: {e}"))?;
 
     let host = String::from("127.0.0.1");
 
-    wait_for_cql(&host, port).await;
+    wait_for_port_readiness(&host, cql_port).await;
+    wait_for_port_readiness(&host, alternator_port).await;
 
     Ok(ScyllaDb {
         _container: Some(container),
         host,
-        port,
+        cql_port,
+        alternator_port,
     })
 }
 
-async fn wait_for_cql(host: &str, port: u16) {
+async fn wait_for_port_readiness(host: &str, port: u16) {
     let addr = format!("{}:{}", host, port);
     for attempt in 0..60 {
         if TcpStream::connect(&addr).is_ok() {
@@ -89,24 +110,113 @@ async fn wait_for_cql(host: &str, port: u16) {
     panic!("ScyllaDB did not become ready on {} within 120s", addr);
 }
 
-fn ensure_latte_built() {
-    LATTE_BUILT.get_or_init(|| {
-        let status = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("Failed to invoke cargo build");
-        assert!(status.success(), "cargo build --release failed");
-        true
-    });
+#[derive(Copy, Clone, Debug)]
+enum LatteVariant {
+    Cql,
+    Alternator,
 }
 
-fn latte_binary() -> String {
-    format!("{}/target/release/latte", env!("CARGO_MANIFEST_DIR"))
-}
+impl LatteVariant {
+    fn binary_name(&self) -> &'static str {
+        match self {
+            LatteVariant::Cql => "latte",
+            LatteVariant::Alternator => "latte-alternator",
+        }
+    }
 
-fn hosts_arg(db: &ScyllaDb) -> String {
-    format!("{}:{}", db.host, db.port)
+    fn binary_path(&self) -> String {
+        format!(
+            "{}/target/release/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            self.binary_name()
+        )
+    }
+
+    fn ensure_built(&self) {
+        static BUILT_CQL: OnceLock<bool> = OnceLock::new();
+        static BUILT_ALT: OnceLock<bool> = OnceLock::new();
+
+        let (lock, extra_args): (&OnceLock<bool>, &[&str]) = match self {
+            LatteVariant::Cql => (&BUILT_CQL, &[]),
+            LatteVariant::Alternator => (
+                &BUILT_ALT,
+                &["--no-default-features", "--features", "alternator"],
+            ),
+        };
+
+        lock.get_or_init(|| {
+            let status = Command::new("cargo")
+                .args(["build", "--release", "--bin", self.binary_name()])
+                .args(extra_args)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .status()
+                .expect("Failed to invoke cargo build");
+
+            assert!(
+                status.success(),
+                "cargo build failed for {}",
+                self.binary_name()
+            );
+            true
+        });
+    }
+
+    fn endpoint_arg(&self, db: &ScyllaDb) -> String {
+        match self {
+            LatteVariant::Cql => format!("{}:{}", db.host, db.cql_port),
+            LatteVariant::Alternator => format!("http://{}:{}", db.host, db.alternator_port),
+        }
+    }
+
+    fn schema(&self, db: &ScyllaDb, workload: &str, extra_args: &[&str]) -> CommandResult {
+        self.ensure_built();
+
+        let mut cmd = Command::new(self.binary_path());
+        cmd.args(["schema", workload, &self.endpoint_arg(db)])
+            .args(extra_args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+
+        println!("Running '{:?}'", cmd);
+        let result = run_command(cmd);
+
+        assert!(
+            result.status.success(),
+            "'{} schema' failed:\n{}",
+            self.binary_name(),
+            result.output
+        );
+        result
+    }
+
+    fn run(
+        &self,
+        db: &ScyllaDb,
+        workload: &str,
+        duration: &str,
+        extra_args: &[&str],
+    ) -> CommandResult {
+        self.ensure_built();
+
+        let mut cmd = Command::new(self.binary_path());
+        cmd.args([
+            "run",
+            workload,
+            &self.endpoint_arg(db),
+            "--duration",
+            duration,
+            "--warmup",
+            "0s",
+            "-q",
+        ])
+        .args(extra_args)
+        .current_dir(env!("CARGO_MANIFEST_DIR"));
+
+        println!("Running '{:?}'", cmd);
+        let result = run_command(cmd);
+
+        eprintln!("'{} run' output:\n{}", self.binary_name(), result.output);
+        result
+    }
 }
 
 fn workload_path(name: &str) -> String {
@@ -143,59 +253,6 @@ fn run_command(mut cmd: Command) -> CommandResult {
     }
 }
 
-fn latte_schema(db: &ScyllaDb, workload: &str, extra_args: &[&str]) -> CommandResult {
-    println!(
-        "{}",
-        format_args!(
-            "Running the 'latte schema' command for the '{}' rune script",
-            workload
-        )
-    );
-    let mut cmd = Command::new(latte_binary());
-    cmd.args(["schema", &workload_path(workload), &hosts_arg(db)])
-        .args(extra_args)
-        .current_dir(env!("CARGO_MANIFEST_DIR"));
-    let result = run_command(cmd);
-    assert!(
-        result.status.success(),
-        "latte schema failed:\n{}",
-        result.output
-    );
-    result
-}
-
-fn latte_run(db: &ScyllaDb, workload: &str, duration: &str, extra_args: &[&str]) -> CommandResult {
-    let workload = workload_path(workload);
-    let hosts = hosts_arg(db);
-    let mut args: Vec<&str> = vec![
-        "run",
-        &workload,
-        &hosts,
-        "--duration",
-        &duration,
-        "--warmup",
-        "0s",
-        "-q",
-    ];
-    args.extend_from_slice(extra_args);
-
-    println!(
-        "{}",
-        format_args!(
-            "Running the 'latte run' command with the following params: {:?}",
-            &args
-        )
-    );
-
-    let mut cmd = Command::new(latte_binary());
-    cmd.args(&args).current_dir(env!("CARGO_MANIFEST_DIR"));
-    let result = run_command(cmd);
-
-    eprintln!("latte output:\n{}", result.output);
-
-    result
-}
-
 fn assert_latte_success(result: &CommandResult) {
     assert!(
         result.status.success(),
@@ -217,27 +274,45 @@ fn assert_has_throughput_metrics(result: &CommandResult) {
 
 #[tokio::test]
 #[ignore]
-async fn test_latte_data_validation_workload() {
+async fn test_latte_cql_data_validation_workload() {
     let db = start_scylla().await.expect("Failed to start ScyllaDB");
-    ensure_latte_built();
 
-    let rune_path = "data_validation.rn";
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("data_validation.rn");
     let duration = "50000";
 
-    println!("\n[TEST-INFO] Phase 1: Create the schema");
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
     let extra_args: &[&str] = match db._container {
         Some(_) => &["-P", "replication_factor=1"], // Running in a single container
         None => &[],
     };
-    latte_schema(&db, rune_path, extra_args);
+    latte.schema(&db, &workload, extra_args);
 
     println!("\n[TEST-INFO] Phase 2: Data population");
-    let populate_result = latte_run(&db, rune_path, duration, &["-f=insert"]);
+    let populate_result = latte.run(&db, &workload, duration, &["-f=insert"]);
     assert_latte_success(&populate_result);
     assert_has_throughput_metrics(&populate_result);
 
     println!("\n[TEST-INFO] Phase 3: Data validation");
-    let data_validation_result = latte_run(&db, rune_path, duration, &["-f=get_by_ck"]);
+    let data_validation_result = latte.run(&db, &workload, duration, &["-f=get_by_ck"]);
     assert_latte_success(&data_validation_result);
     assert_has_throughput_metrics(&data_validation_result);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_latte_alternator_type_validation_workload() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Alternator;
+    let workload = workload_path("alternator/type_validation.rn");
+    let duration = "50000";
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    latte.schema(&db, &workload, &[]);
+
+    println!("\n[TEST-INFO] Phase 2: Run type validation workload");
+    let result = latte.run(&db, &workload, duration, &[]);
+    assert_latte_success(&result);
+    assert_has_throughput_metrics(&result);
 }
