@@ -17,19 +17,7 @@ struct ScyllaDb {
 
 type StartResult = Result<ScyllaDb, String>;
 
-static SCYLLA: OnceLock<StartResult> = OnceLock::new();
 static LATTE_BUILT: OnceLock<bool> = OnceLock::new();
-
-fn scylla() -> &'static ScyllaDb {
-    SCYLLA
-        .get_or_init(|| {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(start_scylla())
-        })
-        .as_ref()
-        .expect("ScyllaDB container is not available")
-}
 
 async fn start_scylla() -> StartResult {
     if let Ok(host) = std::env::var("SCYLLA_TEST_HOST") {
@@ -62,6 +50,8 @@ async fn start_scylla() -> StartResult {
             "1".to_string(),
             "--skip-wait-for-gossip-to-settle".to_string(),
             "0".to_string(),
+            "--broadcast-rpc-address".to_string(), // Avoids Latte trying to connect to the container's internal IP
+            "127.0.0.1".to_string(),
         ])
         .with_startup_timeout(Duration::from_secs(120))
         .start()
@@ -153,7 +143,7 @@ fn run_command(mut cmd: Command) -> CommandResult {
     }
 }
 
-fn latte_schema(db: &ScyllaDb, workload: &str) -> CommandResult {
+fn latte_schema(db: &ScyllaDb, workload: &str, extra_args: &[&str]) -> CommandResult {
     println!(
         "{}",
         format_args!(
@@ -163,6 +153,7 @@ fn latte_schema(db: &ScyllaDb, workload: &str) -> CommandResult {
     );
     let mut cmd = Command::new(latte_binary());
     cmd.args(["schema", &workload_path(workload), &hosts_arg(db)])
+        .args(extra_args)
         .current_dir(env!("CARGO_MANIFEST_DIR"));
     let result = run_command(cmd);
     assert!(
@@ -224,25 +215,29 @@ fn assert_has_throughput_metrics(result: &CommandResult) {
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_latte_data_validation_workload() {
-    let db = scylla();
+async fn test_latte_data_validation_workload() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
     ensure_latte_built();
 
     let rune_path = "data_validation.rn";
     let duration = "50000";
 
     println!("\n[TEST-INFO] Phase 1: Create the schema");
-    latte_schema(db, rune_path);
+    let extra_args: &[&str] = match db._container {
+        Some(_) => &["-P", "replication_factor=1"], // Running in a single container
+        None => &[],
+    };
+    latte_schema(&db, rune_path, extra_args);
 
     println!("\n[TEST-INFO] Phase 2: Data population");
-    let populate_result = latte_run(db, rune_path, duration, &["-f=insert"]);
+    let populate_result = latte_run(&db, rune_path, duration, &["-f=insert"]);
     assert_latte_success(&populate_result);
     assert_has_throughput_metrics(&populate_result);
 
     println!("\n[TEST-INFO] Phase 3: Data validation");
-    let data_validation_result = latte_run(db, rune_path, duration, &["-f=get_by_ck"]);
+    let data_validation_result = latte_run(&db, rune_path, duration, &["-f=get_by_ck"]);
     assert_latte_success(&data_validation_result);
     assert_has_throughput_metrics(&data_validation_result);
 }
