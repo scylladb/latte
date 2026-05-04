@@ -119,6 +119,13 @@ latte show <report.json> -b <previous report.json>  # to compare against baselin
 
 Run `latte --help` to display help with the available options.
 
+## Testing
+Latte has integration tests that run against a real ScyllaDB instance in a docker container. 
+To run them, execute: 
+```shell
+cargo test --test integration_test -- --ignored --nocapture
+```
+
 ## Workloads
 
 Workloads for Latte are fully customizable with embedded scripting language [Rune](https://rune-rs.github.io/).
