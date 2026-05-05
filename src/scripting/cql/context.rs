@@ -9,7 +9,6 @@ use crate::scripting::row_distribution::RowDistributionPreset;
 use crate::stats::session::SessionStats;
 
 use once_cell::sync::Lazy;
-use rand::prelude::ThreadRng;
 use regex::Regex;
 use rune::runtime::{Object, Shared, Vec as RuneVec};
 use rune::{Any, Value};
@@ -52,7 +51,6 @@ pub struct Context {
     pub preferred_rack: String,
     #[rune(get)]
     pub data: Value,
-    pub rng: ThreadRng,
 }
 
 // Needed, because Rune `Value` is !Send, as it may contain some internal pointers.
@@ -88,7 +86,6 @@ impl Context {
             preferred_datacenter,
             preferred_rack,
             data: Value::Object(Shared::new(Object::new()).unwrap()),
-            rng: rand::rng(),
         }
     }
 
@@ -113,7 +110,6 @@ impl Context {
             preferred_rack: self.preferred_rack.clone(),
             data: deserialized,
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
-            rng: rand::rng(),
         })
     }
 
