@@ -15,6 +15,9 @@
     "github-actions",
     "helm-values"
   ],
+  "cargo": {
+    "rangeStrategy": "bump"
+  },
   "packageRules": [
     {
       "groupName": "All dependencies",
