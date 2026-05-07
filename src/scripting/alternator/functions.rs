@@ -204,7 +204,6 @@ fn format_batch_result(
     token: Option<PaginationToken>,
     auto_paginate: bool,
     with_result: bool,
-    table_name: &str,
 ) -> Result<Value, AlternatorError> {
     if !with_result {
         return Ok(Value::EmptyTuple);
@@ -214,69 +213,70 @@ fn format_batch_result(
         return Ok(items.to_value().into_result()?);
     }
 
-    let mut res_obj = rune::runtime::Object::new();
+    let mut res_map = HashMap::new();
 
-    res_obj.insert(
-        rune::alloc::String::try_from("items")?,
-        items.to_value().into_result()?,
-    )?;
+    res_map.insert("items".to_string(), items.to_value().into_result()?);
 
     match token {
-        Some(PaginationToken::UnprocessedKeys(mut u_keys)) => {
-            let keys: Vec<Value> = u_keys
-                .remove(table_name)
-                .map(|k| k.keys)
-                .unwrap_or_default()
+        Some(PaginationToken::UnprocessedKeys(u_keys)) => {
+            let unprocessed_map: HashMap<String, Value> = u_keys
                 .into_iter()
-                .map(alternator_map_to_rune_object)
-                .collect::<Result<_, _>>()?;
-
-            res_obj.insert(
-                rune::alloc::String::try_from("unprocessed_keys")?,
-                keys.to_value().into_result()?,
-            )?;
-        }
-        Some(PaginationToken::UnprocessedItems(mut u_items)) => {
-            let requests: Vec<Value> = u_items
-                .remove(table_name)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|req| {
-                    let mut o = rune::runtime::Object::new();
-
-                    if let Some(put) = req.put_request {
-                        o.insert(
-                            rune::alloc::String::try_from("type")?,
-                            "put".to_value().into_result()?,
-                        )?;
-                        o.insert(
-                            rune::alloc::String::try_from("item")?,
-                            alternator_map_to_rune_object(put.item)?,
-                        )?;
-                    } else if let Some(del) = req.delete_request {
-                        o.insert(
-                            rune::alloc::String::try_from("type")?,
-                            "delete".to_value().into_result()?,
-                        )?;
-                        o.insert(
-                            rune::alloc::String::try_from("key")?,
-                            alternator_map_to_rune_object(del.key)?,
-                        )?;
-                    }
-
-                    Ok(Value::Object(Shared::new(o)?))
+                .map(|(table_name, keys_attr)| {
+                    let keys: Vec<Value> = keys_attr
+                        .keys
+                        .into_iter()
+                        .map(alternator_map_to_rune_object)
+                        .collect::<Result<_, _>>()?;
+                    Ok((table_name, keys.to_value().into_result()?))
                 })
                 .collect::<Result<_, AlternatorError>>()?;
 
-            res_obj.insert(
-                rune::alloc::String::try_from("unprocessed_items")?,
-                requests.to_value().into_result()?,
-            )?;
+            res_map.insert(
+                "unprocessed_keys".to_string(),
+                unprocessed_map.to_value().into_result()?,
+            );
+        }
+        Some(PaginationToken::UnprocessedItems(u_items)) => {
+            let unprocessed_map: HashMap<String, Value> = u_items
+                .into_iter()
+                .map(|(table_name, reqs)| {
+                    let requests: Vec<Value> = reqs
+                        .into_iter()
+                        .map(|req| {
+                            let mut req_map = HashMap::new();
+
+                            if let Some(put) = req.put_request {
+                                req_map.insert("type".to_string(), "put".to_value().into_result()?);
+                                req_map.insert(
+                                    "item".to_string(),
+                                    alternator_map_to_rune_object(put.item)?,
+                                );
+                            } else if let Some(del) = req.delete_request {
+                                req_map
+                                    .insert("type".to_string(), "delete".to_value().into_result()?);
+                                req_map.insert(
+                                    "key".to_string(),
+                                    alternator_map_to_rune_object(del.key)?,
+                                );
+                            }
+
+                            Ok(req_map.to_value().into_result()?)
+                        })
+                        .collect::<Result<_, AlternatorError>>()?;
+
+                    Ok((table_name, requests.to_value().into_result()?))
+                })
+                .collect::<Result<_, AlternatorError>>()?;
+
+            res_map.insert(
+                "unprocessed_items".to_string(),
+                unprocessed_map.to_value().into_result()?,
+            );
         }
         _ => {}
     }
 
-    Ok(Value::Object(Shared::new(res_obj)?))
+    Ok(res_map.to_value().into_result()?)
 }
 
 /// Creates a new table.
@@ -514,45 +514,33 @@ pub async fn update(
     Ok(())
 }
 
-/// Batch retrieves items from the table.
+/// Batch retrieves items from one or multiple tables.
 ///
-/// If `with_result` is set to true, the retrieved items are returned as a `Vec<Object>`.
+/// If `with_result` is set to true, the retrieved items are returned.
 /// Otherwise, the unit value is returned.
 ///
 /// # Arguments
-/// * `table_name` - The name of the table.
-/// * `keys` - A list of items, where each item is an object representing a primary key.
+/// * `requests` - An object mapping table names to a list of primary key objects.
 /// * `options` - Optional parameters. An object containing:
-///   - `consistent_read`: Boolean to enable consistent read for all keys (default: false).
+///   - `consistent_read`: Boolean to enable consistent read for all tables (default: false).
 ///   - `with_result`: If true, the retrieved items are returned (default: false).
 ///   - `get_unprocessed`: If true, disables auto-pagination. When `with_result: true` returns an object with `items` and `unprocessed_keys`.
 #[rune::function(instance)]
 pub async fn batch_get_item(
     ctx: Ref<Context>,
-    table_name: Ref<str>,
-    keys: Ref<rune::runtime::Vec>,
+    requests: Ref<Object>,
     options: Value,
 ) -> Result<Value, AlternatorError> {
     let client = ctx.get_client()?;
 
-    // Convert keys vector to DynamoDB keys
-    let keys_list = keys
-        .iter()
-        .map(|key_val| match key_val {
-            Value::Object(key_obj) => rune_object_to_alternator_map(key_obj.clone().into_ref()?),
-            _ => bad_input("Each key in the keys list must be an object"),
-        })
-        .collect::<Result<_, _>>()?;
-
     let mut with_result = false;
     let mut get_unprocessed = false;
+    let mut consistent_read = false;
 
-    // BatchGetItem requires the keys to be wrapped in a KeysAndAttributes struct
-    let mut keys_request_builder = KeysAndAttributes::builder().set_keys(Some(keys_list));
     if let Value::Object(opts) = &options {
         let opts_ref = opts.borrow_ref()?;
-        if let Some(Value::Bool(consistent_read)) = opts_ref.get("consistent_read") {
-            keys_request_builder = keys_request_builder.consistent_read(*consistent_read);
+        if let Some(Value::Bool(c)) = opts_ref.get("consistent_read") {
+            consistent_read = *c;
         }
         if let Some(Value::Bool(w)) = opts_ref.get("with_result") {
             with_result = *w;
@@ -562,27 +550,47 @@ pub async fn batch_get_item(
         }
     }
 
+    let request_items: HashMap<String, KeysAndAttributes> = requests
+        .iter()
+        .map(|(table_name, keys_val)| {
+            let keys_vec = match keys_val {
+                Value::Vec(vec) => vec.borrow_ref()?,
+                _ => return bad_input("Each table's requests must be a list of keys"),
+            };
+
+            let keys_list = keys_vec
+                .iter()
+                .map(|key_val| match key_val {
+                    Value::Object(key_obj) => {
+                        rune_object_to_alternator_map(key_obj.clone().into_ref()?)
+                    }
+                    _ => bad_input("Each key in the keys list must be an object"),
+                })
+                .collect::<Result<_, _>>()?;
+
+            let keys_and_attributes = KeysAndAttributes::builder()
+                .set_keys(Some(keys_list))
+                .consistent_read(consistent_read)
+                .build()?;
+
+            Ok((table_name.to_string(), keys_and_attributes))
+        })
+        .collect::<Result<_, AlternatorError>>()?;
+
     let builder = client
         .batch_get_item()
-        .request_items(table_name.deref(), keys_request_builder.build()?);
+        .set_request_items(Some(request_items));
 
     let (result_items, token) =
         handle_request_with_pagination(&ctx, builder, !get_unprocessed).await?;
 
-    format_batch_result(
-        result_items,
-        token,
-        !get_unprocessed,
-        with_result,
-        table_name.deref(),
-    )
+    format_batch_result(result_items, token, !get_unprocessed, with_result)
 }
 
-/// Batch writes items to the table.
+/// Batch writes items to one or multiple tables.
 ///
 /// # Arguments
-/// * `table_name` - The name of the table.
-/// * `write_requests` - A list of write requests. Each request is an object containing:
+/// * `requests` - An object mapping table names to a list of write requests. Each request is an object containing:
 ///   - `type`: Either "put" or "delete".
 ///   - `item`: For put requests, the item object to insert.
 ///   - `key`: For delete requests, the key object to delete.
@@ -591,56 +599,10 @@ pub async fn batch_get_item(
 #[rune::function(instance)]
 pub async fn batch_write_item(
     ctx: Ref<Context>,
-    table_name: Ref<str>,
-    write_requests: Ref<rune::runtime::Vec>,
+    requests: Ref<Object>,
     options: Value,
 ) -> Result<Value, AlternatorError> {
     let client = ctx.get_client()?;
-
-    let writes = write_requests
-        .iter()
-        .map(|req_val| {
-            let Value::Object(req_obj) = req_val else {
-                return bad_input("Each write request must be an object");
-            };
-
-            let req_ref = req_obj.borrow_ref()?;
-
-            let req_type = match req_ref.get("type") {
-                Some(Value::String(t)) => t.borrow_ref()?.to_string(),
-                _ => return bad_input("Write request must have a 'type' field (put or delete)"),
-            };
-
-            match req_type.as_str() {
-                "put" => {
-                    let Some(Value::Object(item)) = req_ref.get("item") else {
-                        return bad_input("Put request must have an 'item' field");
-                    };
-
-                    let item_map = rune_object_to_alternator_map(item.clone().into_ref()?)?;
-
-                    Ok(WriteRequest::builder()
-                        .put_request(PutRequest::builder().set_item(Some(item_map)).build()?)
-                        .build())
-                }
-                "delete" => {
-                    let Some(Value::Object(key)) = req_ref.get("key") else {
-                        return bad_input("Delete request must have a 'key' field");
-                    };
-
-                    let key_map = rune_object_to_alternator_map(key.clone().into_ref()?)?;
-
-                    Ok(WriteRequest::builder()
-                        .delete_request(DeleteRequest::builder().set_key(Some(key_map)).build()?)
-                        .build())
-                }
-                _ => bad_input(format!(
-                    "Invalid request type: {}, must be 'put' or 'delete'",
-                    req_type
-                )),
-            }
-        })
-        .collect::<Result<_, _>>()?;
 
     let mut get_unprocessed = false;
 
@@ -651,20 +613,79 @@ pub async fn batch_write_item(
         }
     }
 
+    let request_items: HashMap<String, Vec<WriteRequest>> = requests
+        .iter()
+        .map(|(table_name, reqs_val)| {
+            let reqs_vec = match reqs_val {
+                Value::Vec(vec) => vec.borrow_ref()?,
+                _ => return bad_input("Each table's requests must be a list of write requests"),
+            };
+
+            let writes = reqs_vec
+                .iter()
+                .map(|req_val| {
+                    let Value::Object(req_obj) = req_val else {
+                        return bad_input("Each write request must be an object");
+                    };
+
+                    let req_ref = req_obj.borrow_ref()?;
+
+                    let req_type = match req_ref.get("type") {
+                        Some(Value::String(t)) => t.borrow_ref()?.to_string(),
+                        _ => {
+                            return bad_input(
+                                "Write request must have a 'type' field (put or delete)",
+                            )
+                        }
+                    };
+
+                    match req_type.as_str() {
+                        "put" => {
+                            let Some(Value::Object(item)) = req_ref.get("item") else {
+                                return bad_input("Put request must have an 'item' field");
+                            };
+
+                            let item_map = rune_object_to_alternator_map(item.clone().into_ref()?)?;
+
+                            Ok(WriteRequest::builder()
+                                .put_request(
+                                    PutRequest::builder().set_item(Some(item_map)).build()?,
+                                )
+                                .build())
+                        }
+                        "delete" => {
+                            let Some(Value::Object(key)) = req_ref.get("key") else {
+                                return bad_input("Delete request must have a 'key' field");
+                            };
+
+                            let key_map = rune_object_to_alternator_map(key.clone().into_ref()?)?;
+
+                            Ok(WriteRequest::builder()
+                                .delete_request(
+                                    DeleteRequest::builder().set_key(Some(key_map)).build()?,
+                                )
+                                .build())
+                        }
+                        _ => bad_input(format!(
+                            "Invalid request type: {}, must be 'put' or 'delete'",
+                            req_type
+                        )),
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+
+            Ok((table_name.to_string(), writes))
+        })
+        .collect::<Result<_, AlternatorError>>()?;
+
     let builder = client
         .batch_write_item()
-        .request_items(table_name.deref(), writes);
+        .set_request_items(Some(request_items));
 
     let (result_items, token) =
         handle_request_with_pagination(&ctx, builder, !get_unprocessed).await?;
 
-    format_batch_result(
-        result_items,
-        token,
-        !get_unprocessed,
-        get_unprocessed,
-        table_name.deref(),
-    )
+    format_batch_result(result_items, token, !get_unprocessed, get_unprocessed)
 }
 
 /// Queries items from the table.

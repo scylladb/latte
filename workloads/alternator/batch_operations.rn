@@ -15,9 +15,10 @@ pub async fn run(db, i) {
     let batch_size = 5;
     let base_id = `user_${i}_`;
     
-    let write_requests = [];
+    let write_requests = #{};
+    write_requests[TABLE] = [];
     for j in 0..batch_size {
-        write_requests.push(#{
+         write_requests[TABLE].push(#{
             type: "put",
             item: #{
                 pk: `${base_id}${j}`,
@@ -26,19 +27,20 @@ pub async fn run(db, i) {
         });
     }
     
-    db.batch_write_item(TABLE, write_requests, ()).await?;
+    db.batch_write_item(write_requests, ()).await?;
     
-    let keys = [];
+    let get_requests = #{};
+    get_requests[TABLE] = [];
     for j in 0..batch_size {
-        keys.push(#{
+        get_requests[TABLE].push(#{
             pk: `${base_id}${j}`,
         });
     }
     
-    db.batch_get_item(TABLE, keys, None).await?;
+    db.batch_get_item(get_requests, None).await?;
     
     // Batch get with result retrieval
-    let result = db.batch_get_item(TABLE, keys, #{
+    let result = db.batch_get_item(get_requests, #{
         consistent_read: true,
         with_result: true
     }).await?;
@@ -46,9 +48,10 @@ pub async fn run(db, i) {
     // Check that we got the expected number of items back
     assert!(result.len() == batch_size);
     
-    let delete_requests = [];
+    let delete_requests = #{};
+    delete_requests[TABLE] = [];
     for j in 0..batch_size {
-        delete_requests.push(#{
+        delete_requests[TABLE].push(#{
             type: "delete",
             key: #{
                 pk: `${base_id}${j}`,
@@ -56,9 +59,9 @@ pub async fn run(db, i) {
         });
     }
     
-    db.batch_write_item(TABLE, delete_requests, ()).await?;
+    db.batch_write_item(delete_requests, ()).await?;
 
-    let result_after_delete = db.batch_get_item(TABLE, keys, #{
+    let result_after_delete = db.batch_get_item(get_requests, #{
         consistent_read: true,
         with_result: true
     }).await?;
