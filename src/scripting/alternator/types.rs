@@ -8,6 +8,18 @@ use std::collections::HashMap;
 pub const SSET_KEY: &str = "__sset";
 pub const NSET_KEY: &str = "__nset";
 pub const BSET_KEY: &str = "__bset";
+pub const CONSISTENT_READ_KEY: &str = "consistent_read";
+pub const WITH_RESULT_KEY: &str = "with_result";
+pub const GET_UNPROCESSED_KEY: &str = "get_unprocessed";
+pub const PRIMARY_KEY_KEY: &str = "primary_key";
+pub const SORT_KEY_KEY: &str = "sort_key";
+pub const LIMIT_KEY: &str = "limit";
+pub const VALIDATION_KEY: &str = "validation";
+pub const ATTRIBUTE_NAMES_KEY: &str = "attribute_names";
+pub const ATTRIBUTE_VALUES_KEY: &str = "attribute_values";
+pub const UPDATE_EXPRESSION_KEY: &str = "update";
+pub const QUERY_EXPRESSION_KEY: &str = "query";
+pub const FILTER_EXPRESSION_KEY: &str = "filter";
 
 fn alternator_set_to_rune<I, T, F>(key: &str, iter: I, wrapper: F) -> Result<Value, AlternatorError>
 where
