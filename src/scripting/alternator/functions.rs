@@ -882,7 +882,10 @@ pub async fn scan(
 
     if let Some(limit_val) = params.get("limit") {
         if let Ok(i) = limit_val.as_signed() {
-            builder = builder.limit(i as i32);
+            builder = builder.limit(match i32::try_from(i) {
+                Ok(val) => val,
+                Err(_) => return bad_input("limit is out of range"),
+            });
         } else {
             return bad_input("limit must be an integer");
         }
