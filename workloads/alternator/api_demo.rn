@@ -42,6 +42,14 @@ pub async fn run(db, i) {
         consistent_read: true
     }).await?;
 
+    // GET with projection expression - only retrieve specific attributes
+    db.get(TABLE, key, #{
+        projection_expression: "#n, age",
+        "attribute_names": #{
+            "#n": "name"
+        }
+    }).await?;
+
     // UPDATE Item
     db.update(TABLE, key, #{
         update: "SET #n = :new_name, age = :new_age",
@@ -64,6 +72,18 @@ pub async fn run(db, i) {
         consistent_read: true
     }).await?;
 
+    // QUERY with projection expression
+    db.query(TABLE, #{
+        query: "pk = :pk",
+        projection_expression: "#n, age",
+        "attribute_names": #{
+            "#n": "name"
+        },
+        "attribute_values": #{
+            ":pk": user_id
+        }
+    }).await?;
+
     // QUERY with validation
     db.query(TABLE, #{
         query: "pk = :pk",
@@ -78,6 +98,14 @@ pub async fn run(db, i) {
         filter: "age > :min_age",
         "attribute_values": #{
             ":min_age": 18
+        }
+    }).await?;
+
+    // SCAN with projection expression
+    db.scan(TABLE, #{
+        projection_expression: "pk, #n",
+        "attribute_names": #{
+            "#n": "name"
         }
     }).await?;
 
