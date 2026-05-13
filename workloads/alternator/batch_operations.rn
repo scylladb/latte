@@ -47,6 +47,26 @@ pub async fn run(db, i) {
 
     // Check that we got the expected number of items back
     assert!(result.len() == batch_size);
+
+    // BATCH GET with projection expression (extended per-table object form).
+    // Each table maps to an object with `keys`, and optionally
+    // `projection_expression` / `attribute_names` for reserved-word aliasing.
+    let proj_requests = #{};
+    proj_requests[TABLE] = #{
+        keys: get_requests[TABLE],
+        projection_expression: "pk, #d",
+        "attribute_names": #{
+            "#d": "data"
+        }
+    };
+    let proj_result = db.batch_get_item(proj_requests, #{
+        with_result: true
+    }).await?;
+
+    assert!(proj_result.len() == batch_size);
+    // the returned items should have 'pk' and 'data' attributes since we projected them
+    assert!(proj_result[0].pk is String);
+    assert!(proj_result[0].data is String);
     
     let delete_requests = #{};
     delete_requests[TABLE] = [];
