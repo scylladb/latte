@@ -157,5 +157,17 @@ pub async fn run(db, i) {
         primary_key: 123
     }).await, "create_table", "primary_key");
 
+    // Type validation for condition_expression
+    assert_bad_param(db.put(TABLE, #{pk: user_id, sk: user_order}, #{
+        condition_expression: 123
+    }).await, "put", "condition_expression");
 
+    assert_bad_param(db.delete(TABLE, key, #{
+        condition_expression: 123
+    }).await, "delete", "condition_expression");
+
+    assert_bad_param(db.update(TABLE, key, #{
+        update: "SET age = :new_age",
+        condition_expression: 123
+    }).await, "update", "condition_expression");
 }
