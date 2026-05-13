@@ -485,6 +485,8 @@ pub async fn delete(
 ///   (and sort key if the table has one).
 /// * `options` - Optional parameters object:
 ///   - `consistent_read`: Boolean to enable consistent read (default: false).
+///   - `projection_expression`: A string that identifies the attributes to retrieve (optional).
+///   - `attribute_names`: A map of attribute name placeholders (starting with #) to actual names (optional).
 ///   - `with_result`: If true, the result item is returned (default: false).
 #[rune::function(instance)]
 pub async fn get(
@@ -504,7 +506,12 @@ pub async fn get(
         check_invalid_params(
             opts.deref(),
             "get",
-            &[CONSISTENT_READ_KEY, WITH_RESULT_KEY],
+            &[
+                CONSISTENT_READ_KEY,
+                PROJECTION_EXPRESSION_KEY,
+                ATTRIBUTE_NAMES_KEY,
+                WITH_RESULT_KEY,
+            ],
         )?;
 
         if let Some(v) = opts.get(CONSISTENT_READ_KEY) {
@@ -512,6 +519,21 @@ pub async fn get(
                 Ok(b) => b,
                 _ => return bad_input(format!("'{}' must be a boolean", CONSISTENT_READ_KEY)),
             });
+        }
+        if let Some(proj) = opts.get(PROJECTION_EXPRESSION_KEY) {
+            if let Ok(s) = proj.borrow_ref::<rune::alloc::String>() {
+                builder = builder.projection_expression(s.as_str().to_string());
+            } else {
+                return bad_input(format!("'{}' must be a string", PROJECTION_EXPRESSION_KEY));
+            }
+        }
+        if let Some(attr_names) = opts.get(ATTRIBUTE_NAMES_KEY) {
+            if let Ok(obj) = attr_names.borrow_ref::<Object>() {
+                builder =
+                    builder.set_expression_attribute_names(Some(extract_attribute_names(&obj)?));
+            } else {
+                return bad_input(format!("'{}' must be an object", ATTRIBUTE_NAMES_KEY));
+            }
         }
     }
 
@@ -602,7 +624,12 @@ pub async fn update(
 /// Otherwise, the unit value is returned.
 ///
 /// # Arguments
-/// * `requests` - An object mapping table names to a list of primary key objects.
+/// * `requests` - An object mapping table names to either:
+///   - A list of primary key objects (simple form), or
+///   - An object containing:
+///     - `keys`: A list of primary key objects (required).
+///     - `projection_expression`: A string that identifies the attributes to retrieve (optional).
+///     - `attribute_names`: A map of attribute name placeholders (starting with #) to actual names (optional).
 /// * `options` - Optional parameters. An object containing:
 ///   - `consistent_read`: Boolean to enable consistent read for all tables (default: false).
 ///   - `with_result`: If true, the retrieved items are returned (default: false).
@@ -651,28 +678,91 @@ pub async fn batch_get_item(
 
     let request_items: HashMap<String, KeysAndAttributes> = requests
         .iter()
-        .map(|(table_name, keys_val)| {
-            let keys_vec = if let Ok(vec) = keys_val.borrow_ref::<rune::runtime::Vec>() {
-                vec
-            } else {
-                return bad_input("Each table's requests must be a list of keys");
-            };
+        .map(|(table_name, table_val)| {
+            // Each table entry can be either a plain list of keys or an object
+            // with keys, projection_expression, and attribute_names.
+            let (keys_list, projection, attr_names) =
+                if let Ok(keys_vec) = table_val.borrow_ref::<rune::runtime::Vec>() {
+                    let keys = keys_vec
+                        .iter()
+                        .map(|key_val| {
+                            if let Ok(key_obj) = key_val.borrow_ref::<Object>() {
+                                rune_object_to_alternator_map(&key_obj)
+                            } else {
+                                bad_input("Each key in the keys list must be an object")
+                            }
+                        })
+                        .collect::<Result<_, _>>()?;
+                    (keys, None, None)
+                } else if let Ok(obj_ref) = table_val.borrow_ref::<Object>() {
+                    check_invalid_params(
+                        &obj_ref,
+                        "batch_get_item request object",
+                        &["keys", PROJECTION_EXPRESSION_KEY, ATTRIBUTE_NAMES_KEY],
+                    )?;
 
-            let keys_list = keys_vec
-                .iter()
-                .map(|key_val| {
-                    if let Ok(key_obj) = key_val.borrow_ref::<Object>() {
-                        rune_object_to_alternator_map(&key_obj)
+                    let keys = if let Some(v) = obj_ref.get("keys") {
+                        if let Ok(keys_vec) = v.borrow_ref::<rune::runtime::Vec>() {
+                            keys_vec
+                                .iter()
+                                .map(|key_val| {
+                                    if let Ok(key_obj) = key_val.borrow_ref::<Object>() {
+                                        rune_object_to_alternator_map(&key_obj)
+                                    } else {
+                                        bad_input("Each key in the keys list must be an object")
+                                    }
+                                })
+                                .collect::<Result<_, _>>()?
+                        } else {
+                            return bad_input("Table object must have a 'keys' list");
+                        }
                     } else {
-                        bad_input("Each key in the keys list must be an object")
-                    }
-                })
-                .collect::<Result<_, _>>()?;
+                        return bad_input("Table object must have a 'keys' list");
+                    };
 
-            let keys_and_attributes = KeysAndAttributes::builder()
+                    let projection = if let Some(v) = obj_ref.get("projection_expression") {
+                        if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
+                            Some(s.as_str().to_string())
+                        } else {
+                            return bad_input(format!(
+                                "'{}' must be a string",
+                                PROJECTION_EXPRESSION_KEY
+                            ));
+                        }
+                    } else {
+                        None
+                    };
+
+                    let attr_names = if let Some(v) = obj_ref.get(ATTRIBUTE_NAMES_KEY) {
+                        if let Ok(names) = v.borrow_ref::<Object>() {
+                            Some(extract_attribute_names(&names)?)
+                        } else {
+                            return bad_input("attribute_names must be an object");
+                        }
+                    } else {
+                        None
+                    };
+
+                    (keys, projection, attr_names)
+                } else {
+                    return bad_input(
+                        "Each table's requests must be a list of keys or an object with 'keys'",
+                    );
+                };
+
+            let mut builder = KeysAndAttributes::builder()
                 .set_keys(Some(keys_list))
-                .consistent_read(consistent_read)
-                .build()?;
+                .consistent_read(consistent_read);
+
+            if let Some(proj) = projection {
+                builder = builder.projection_expression(proj);
+            }
+
+            if let Some(names) = attr_names {
+                builder = builder.set_expression_attribute_names(Some(names));
+            }
+
+            let keys_and_attributes = builder.build()?;
 
             Ok((table_name.to_string(), keys_and_attributes))
         })
@@ -824,6 +914,7 @@ pub async fn batch_write_item(
 /// * `params` - Parameters for the query operation. An object containing:
 ///   - `query`: The key condition expression string (required).
 ///   - `filter`: The filter expression string (optional, applied after query).
+///   - `projection_expression`: A string that identifies the attributes to retrieve (optional).
 ///   - `attribute_names`: A map of attribute name placeholders (starting with #) to actual names.
 ///   - `attribute_values`: A map of attribute value placeholders (starting with :) to values.
 ///   - `consistent_read`: Boolean to enable consistent read (default: false).
@@ -846,6 +937,7 @@ pub async fn query(
         &[
             QUERY_EXPRESSION_KEY,
             FILTER_EXPRESSION_KEY,
+            PROJECTION_EXPRESSION_KEY,
             ATTRIBUTE_NAMES_KEY,
             ATTRIBUTE_VALUES_KEY,
             CONSISTENT_READ_KEY,
@@ -868,6 +960,14 @@ pub async fn query(
             builder = builder.filter_expression(s.as_str().to_string());
         } else {
             return bad_input(format!("'{}' must be a string", FILTER_EXPRESSION_KEY));
+        }
+    }
+
+    if let Some(proj) = params.get(PROJECTION_EXPRESSION_KEY) {
+        if let Ok(s) = proj.borrow_ref::<rune::alloc::String>() {
+            builder = builder.projection_expression(s.as_str().to_string());
+        } else {
+            return bad_input(format!("'{}' must be a string", PROJECTION_EXPRESSION_KEY));
         }
     }
 
@@ -945,6 +1045,7 @@ pub async fn query(
 /// * `table_name` - The name of the table.
 /// * `params` - Parameters for the scan operation. An object containing:
 ///   - `filter`: The filter expression string (optional).
+///   - `projection_expression`: A string that identifies the attributes to retrieve (optional).
 ///   - `attribute_names`: A map of attribute name placeholders (starting with #) to actual names.
 ///   - `attribute_values`: A map of attribute value placeholders (starting with :) to values.
 ///   - `consistent_read`: Boolean to enable consistent read (default: false).
@@ -966,6 +1067,7 @@ pub async fn scan(
         "scan",
         &[
             FILTER_EXPRESSION_KEY,
+            PROJECTION_EXPRESSION_KEY,
             ATTRIBUTE_NAMES_KEY,
             ATTRIBUTE_VALUES_KEY,
             CONSISTENT_READ_KEY,
@@ -980,6 +1082,14 @@ pub async fn scan(
             builder = builder.filter_expression(s.as_str().to_string());
         } else {
             return bad_input(format!("'{}' must be a string", FILTER_EXPRESSION_KEY));
+        }
+    }
+
+    if let Some(proj) = params.get(PROJECTION_EXPRESSION_KEY) {
+        if let Ok(s) = proj.borrow_ref::<rune::alloc::String>() {
+            builder = builder.projection_expression(s.as_str().to_string());
+        } else {
+            return bad_input(format!("'{}' must be a string", PROJECTION_EXPRESSION_KEY));
         }
     }
 
