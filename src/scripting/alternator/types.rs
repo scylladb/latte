@@ -17,6 +17,7 @@ pub const LIMIT_KEY: &str = "limit";
 pub const VALIDATION_KEY: &str = "validation";
 pub const ATTRIBUTE_NAMES_KEY: &str = "attribute_names";
 pub const ATTRIBUTE_VALUES_KEY: &str = "attribute_values";
+pub const PROJECTION_EXPRESSION_KEY: &str = "projection_expression";
 pub const UPDATE_EXPRESSION_KEY: &str = "update";
 pub const QUERY_EXPRESSION_KEY: &str = "query";
 pub const FILTER_EXPRESSION_KEY: &str = "filter";
