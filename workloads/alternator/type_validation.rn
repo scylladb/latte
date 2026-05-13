@@ -65,7 +65,7 @@ pub async fn run(db, i) {
         test_option_none: None,
     };
 
-    db.put(TABLE, item).await?;
+    db.put(TABLE, item, ()).await?;
     
     // Retrieve the item and validate types
     let result_wrapped = db.get(TABLE, #{ pk: pk }, #{

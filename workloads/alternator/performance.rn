@@ -101,7 +101,7 @@ fn generate_item(pk_str, i) {
 
 pub async fn load(db, i) {
     let pk_str = get_key_name(i);
-    db.put(TABLE, generate_item(pk_str, i)).await?;
+    db.put(TABLE, generate_item(pk_str, i), ()).await?;
 }
 
 pub async fn get(db, i) {
@@ -130,5 +130,5 @@ pub async fn update(db, i) {
 pub async fn insert(db, i) {
     let key_num = ROW_COUNT + i;
     let pk_str = get_key_name(key_num);
-    db.put(TABLE, generate_item(pk_str, key_num)).await?;
+    db.put(TABLE, generate_item(pk_str, key_num), ()).await?;
 }

@@ -15,6 +15,7 @@ pub const PRIMARY_KEY_KEY: &str = "primary_key";
 pub const SORT_KEY_KEY: &str = "sort_key";
 pub const LIMIT_KEY: &str = "limit";
 pub const VALIDATION_KEY: &str = "validation";
+pub const CONDITION_EXPRESSION_KEY: &str = "condition_expression";
 pub const ATTRIBUTE_NAMES_KEY: &str = "attribute_names";
 pub const ATTRIBUTE_VALUES_KEY: &str = "attribute_values";
 pub const PROJECTION_EXPRESSION_KEY: &str = "projection_expression";
