@@ -30,7 +30,7 @@ pub async fn run(db, i) {
             num: 1234567890,
             bool: true
         }
-    }).await?;
+    }, ()).await?;
 
     // GET
     let key = #{
@@ -110,5 +110,5 @@ pub async fn run(db, i) {
     }).await?;
 
     // DELETE Item
-    db.delete(TABLE, key).await?;
+    db.delete(TABLE, key, ()).await?;
 }

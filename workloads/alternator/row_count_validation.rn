@@ -30,7 +30,7 @@ pub async fn insert(db, i) {
     let pk = hash(partition.idx);
     let ck = hash(idx);
     
-    db.put(TABLE, #{pk: pk, ck: ck}).await?;
+    db.put(TABLE, #{pk: pk, ck: ck}, ()).await?;
 }
 
 pub async fn query(db, i) {
