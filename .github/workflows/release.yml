@@ -57,10 +57,17 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   release-artifacts:
-    needs: [get_tag]
+    needs: [get_tag, release]
     strategy:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
+        variant:
+          - name: latte
+            args: --release
+            binary: latte
+          - name: latte-alternator
+            args: --release --no-default-features --features alternator
+            binary: latte-alternator
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -73,31 +80,29 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: ${{ matrix.variant.args }}
 
       - name: Set Binary Name
         id: set_binary_name
         run: |
-          BIN_NAME="latte-${{ needs.get_tag.outputs.tag }}--${{ matrix.os }}"
+          BIN_NAME="${{ matrix.variant.name }}-${{ needs.get_tag.outputs.tag }}--${{ matrix.os }}"
           echo "BIN_NAME=$BIN_NAME" >> $GITHUB_ENV
-          echo "BIN_NAME=$BIN_NAME"
         shell: bash
 
       - name: Get Release Upload URL
         id: get_upload_url
         run: |
-          UPLOAD_URL=$(gh release view ${{ inputs.version }} --json uploadUrl -q '.uploadUrl' | sed 's/{.*//')
-          echo "UPLOAD_URL=${UPLOAD_URL}?name=${{ env.BIN_NAME }}" >> $GITHUB_ENV
+          UPLOAD_URL=$(gh release view ${{ needs.get_tag.outputs.tag }} --json uploadUrl -q '.uploadUrl' | sed 's/{.*//')
+          echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Release Asset
-        id: upload-release-asset-unix
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ env.UPLOAD_URL }}
-          asset_path: ./target/release/latte
+          upload_url: ${{ env.UPLOAD_URL }}?name=${{ env.BIN_NAME }}
+          asset_path: ./target/release/${{ matrix.variant.binary }}
           asset_name: ${{ env.BIN_NAME }}
           asset_content_type: application/octet-stream
