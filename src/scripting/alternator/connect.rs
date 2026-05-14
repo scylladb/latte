@@ -1,7 +1,7 @@
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
+use super::driver::create_client;
 use crate::config::ConnectionConf;
-use alternator_driver::AlternatorClient as Client;
 use aws_config::retry::RetryConfig;
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::config::{Credentials, Region};
@@ -37,7 +37,7 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> 
 
     let config = config_loader.load().await;
 
-    let client = Client::new(&config);
+    let client = create_client(&config, conf);
 
     // Validate connection by making a test request
     client.list_tables().limit(1).send().await.map_err(|e| {
