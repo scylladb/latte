@@ -1,0 +1,400 @@
+# Latte for DynamoDB / Alternator
+
+**Benchmarks DynamoDB-compatible APIs (Amazon DynamoDB, ScyllaDB Alternator) using the same engine as CQL-based Latte**
+
+Latte ships a dedicated `latte-alternator` binary that speaks the DynamoDB protocol instead of CQL.
+It uses the AWS SDK for Rust under the hood and supports all the same execution features
+(async engine, rate/concurrency limiting, HDR histograms, reports, comparisons, etc.).
+
+> **Note:** The AWS SDK driver is planned to be replaced with the dedicated ScyllaDB Alternator driver,
+> which is currently under active development. The workload API will remain the same.
+
+## Installation
+
+### From source
+
+1. [Install Rust toolchain](https://rustup.rs/)
+2. Build the alternator binary:
+
+```shell
+RUSTFLAGS="--cfg fetch_extended_version_info --cfg tokio_unstable" cargo install --path . --no-default-features --features alternator
+```
+
+### From release binaries
+
+1. [Open Latte releases page on GitHub](https://github.com/scylladb/latte/releases)
+2. Download `latte-alternator-<version>--<os>` for your platform
+
+### From docker image
+
+The `scylladb/latte` docker image contains both `latte` and `latte-alternator`.
+Override the entrypoint to use the alternator binary:
+
+```shell
+docker run --entrypoint latte-alternator scylladb/latte:latest <args>
+```
+
+## Usage
+
+Point `latte-alternator` at a DynamoDB-compatible HTTP endpoint:
+
+```shell
+latte-alternator schema <workload.rn> http://<host>:<port>
+latte-alternator run <workload.rn> http://<host>:<port>
+```
+
+For ScyllaDB Alternator the default port is `8000`. For local DynamoDB the default is `8000` as well.
+
+### AWS credentials
+
+`latte-alternator` uses the standard AWS SDK credential chain. For local/Alternator usage
+where authentication is not required, you can set dummy credentials:
+
+```shell
+export AWS_ACCESS_KEY_ID=dummy
+export AWS_SECRET_ACCESS_KEY=dummy
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+## Workloads
+
+Alternator workloads use the same Rune scripting language as CQL workloads.
+The difference is the context API — instead of CQL-oriented `execute`/`execute_prepared`,
+you use DynamoDB-style operations: `put`, `get`, `update`, `delete`, `query`, `scan`,
+`batch_write_item`, `batch_get_item`, `create_table`, and `delete_table`.
+
+Example workload scripts are in the [`workloads/alternator/`](workloads/alternator/) directory.
+
+### Basic CRUD operations
+
+```rust
+use latte::*;
+
+const TABLE = "my_table";
+
+pub async fn schema(db) {
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, #{
+        primary_key: "pk",
+        sort_key: #{name: "sk", type: "N"}
+    }).await?;
+}
+
+pub async fn run(db, i) {
+    let pk = "user_" + i.to_string();
+    let sk = 1;
+
+    // PUT
+    db.put(TABLE, #{
+        pk: pk,
+        sk: sk,
+        name: "Random Name",
+        age: 20,
+        tags: ["a", "b", "c"]
+    }).await?;
+
+    // GET
+    let key = #{ pk: pk, sk: sk };
+    db.get(TABLE, key, None).await?;
+
+    // GET with consistent read
+    db.get(TABLE, key, #{ consistent_read: true }).await?;
+
+    // UPDATE
+    db.update(TABLE, key, #{
+        update: "SET #n = :new_name",
+        attribute_names: #{ "#n": "name" },
+        attribute_values: #{ ":new_name": "Updated Name" }
+    }).await?;
+
+    // QUERY
+    db.query(TABLE, #{
+        query: "pk = :pk",
+        attribute_values: #{ ":pk": pk },
+        limit: 10
+    }).await?;
+
+    // SCAN with filter
+    db.scan(TABLE, #{
+        filter: "age > :min",
+        attribute_values: #{ ":min": 18 }
+    }).await?;
+
+    // DELETE
+    db.delete(TABLE, key).await?;
+}
+```
+
+### Batch operations
+
+```rust
+use latte::*;
+
+const TABLE = "batch_table";
+
+pub async fn schema(db) {
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "pk").await?;
+}
+
+pub async fn run(db, i) {
+    let batch_size = 5;
+    let base_id = `user_${i}_`;
+
+    // Batch write
+    let write_requests = #{};
+    write_requests[TABLE] = [];
+    for j in 0..batch_size {
+        write_requests[TABLE].push(#{
+            type: "put",
+            item: #{ pk: `${base_id}${j}`, data: `item_${j}` }
+        });
+    }
+    db.batch_write_item(write_requests, ()).await?;
+
+    // Batch get
+    let get_requests = #{};
+    get_requests[TABLE] = [];
+    for j in 0..batch_size {
+        get_requests[TABLE].push(#{ pk: `${base_id}${j}` });
+    }
+    let results = db.batch_get_item(get_requests, #{
+        consistent_read: true,
+        with_result: true
+    }).await?;
+    assert!(results.len() == batch_size);
+
+    // Batch delete
+    let delete_requests = #{};
+    delete_requests[TABLE] = [];
+    for j in 0..batch_size {
+        delete_requests[TABLE].push(#{
+            type: "delete",
+            key: #{ pk: `${base_id}${j}` }
+        });
+    }
+    db.batch_write_item(delete_requests, ()).await?;
+}
+```
+
+### Handling unprocessed items in batch writes
+
+For large batch writes that may exceed provisioned throughput, you can manually
+handle unprocessed items:
+
+```rust
+loop {
+    let res = db.batch_write_item(write_requests, #{ get_unprocessed: true }).await?;
+    if let Some(unprocessed) = res.get("unprocessed_items") {
+        write_requests = unprocessed;
+    } else {
+        break;
+    }
+}
+```
+
+### Large objects and result retrieval
+
+Use `with_result: true` to retrieve item data from GET operations:
+
+```rust
+use latte::*;
+
+const TABLE = "large_objects_table";
+const ROW_COUNT = latte::param!("rows", 1000);
+const OBJECT_SIZE = latte::param!("size", 10240);
+const WITH_RESULT = latte::param!("with_result", false);
+
+pub async fn schema(db) {
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "id").await?;
+}
+
+pub async fn insert(db, i) {
+    db.put(TABLE, #{
+        id: (i % ROW_COUNT).to_string(),
+        data: latte::text(i, OBJECT_SIZE)
+    }).await?;
+}
+
+pub async fn run(db, i) {
+    let id = (latte::hash(i) % ROW_COUNT).to_string();
+    if WITH_RESULT {
+        db.get(TABLE, #{ id: id }, #{ with_result: true }).await?;
+    } else {
+        db.get(TABLE, #{ id: id }, ()).await?;
+    }
+}
+```
+
+Run with:
+```shell
+latte-alternator schema workloads/alternator/large_objects.rn http://172.17.0.2:8000
+latte-alternator run workloads/alternator/large_objects.rn -f insert -d 1000 http://172.17.0.2:8000
+latte-alternator run workloads/alternator/large_objects.rn http://172.17.0.2:8000
+latte-alternator run workloads/alternator/large_objects.rn http://172.17.0.2:8000 -P with_result=true
+```
+
+### Row count validation
+
+Query results can be validated for expected row counts, same as in CQL workloads:
+
+```rust
+// Strict validation: exactly 1 row expected
+db.query(TABLE, #{
+    query: "pk = :pk",
+    attribute_values: #{ ":pk": pk },
+    validation: [1, "custom error message"]
+}).await?;
+
+// Range validation: between min and max rows
+db.query(TABLE, #{
+    query: "pk = :pk",
+    attribute_values: #{ ":pk": pk },
+    validation: [min_rows, max_rows]
+}).await?;
+```
+
+### Data validation
+
+Write data with known values, read it back with `with_result: true`, and assert correctness.
+This pattern is useful for verifying data integrity under load — e.g. detecting corruption,
+TTL-related deletions, or replication issues.
+
+```rust
+use latte::*;
+
+const TABLE = "data_validation_table";
+const ROW_COUNT = latte::param!("row_count", 1000);
+const BLOB_SIZE = latte::param!("blob_size", 128);
+
+pub async fn schema(db) {
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "pk").await?;
+}
+
+// Helper: generate expected row data deterministically from cycle number
+async fn generate_row(i) {
+    let idx = i % ROW_COUNT;
+    let pk = "item_" + idx.to_string();
+    let name = latte::text(idx, 16);
+    let score = latte::hash(idx) % 1000;
+    let tags = ["tag_" + (idx % 5).to_string(), "tag_" + (idx % 3).to_string()];
+    let payload = latte::blob(idx, BLOB_SIZE);
+    #{
+        pk: pk,
+        name: name,
+        score: score,
+        tags: tags,
+        payload: payload,
+    }
+}
+
+pub async fn write(db, i) {
+    let row = generate_row(i).await;
+    db.put(TABLE, row).await?;
+}
+
+pub async fn read(db, i) {
+    let expected = generate_row(i).await;
+    let result = db.get(TABLE, #{ pk: expected.pk }, #{
+        consistent_read: true,
+        with_result: true
+    }).await?.unwrap();
+
+    // Validate each field
+    if result["name"] != expected.name {
+        db.signal_failure(
+            `Field 'name': expected '${expected.name}', got '${result["name"]}'`
+        ).await?;
+    }
+    if result["score"] != expected.score {
+        db.signal_failure(
+            `Field 'score': expected '${expected.score}', got '${result["score"]}'`
+        ).await?;
+    }
+    if result["tags"] != expected.tags {
+        db.signal_failure(
+            `Field 'tags': expected '${expected.tags}', got '${result["tags"]}'`
+        ).await?;
+    }
+    if result["payload"] != expected.payload {
+        db.signal_failure(
+            `Field 'payload' mismatch for pk='${expected.pk}'`
+        ).await?;
+    }
+}
+```
+
+Run with:
+```shell
+latte-alternator schema workloads/alternator/data_validation.rn http://172.17.0.2:8000
+latte-alternator run -f write -d 1000 workloads/alternator/data_validation.rn http://172.17.0.2:8000
+latte-alternator run -f read -d 60s workloads/alternator/data_validation.rn http://172.17.0.2:8000
+```
+
+Use `--validation-strategy` to control behavior on failure:
+- `fail-fast` (default) — stop immediately on first mismatch
+- `retry` — retry the read (useful for eventually-consistent scenarios)
+- `ignore` — count failures but continue the benchmark
+
+The alternator driver supports all DynamoDB attribute value types:
+
+| Rune type | DynamoDB type |
+|-----------|---------------|
+| `true` / `false` | Bool |
+| integer (`42`) | N (Number) |
+| float (`3.14`) | N (Number) |
+| string (`"hello"`) | S (String) |
+| bytes (`b"data"`) | B (Binary) |
+| `string_set(["a", "b"])` | SS (String Set) |
+| `number_set([1, 2, 3])` | NS (Number Set) |
+| `binary_set([b"a", b"b"])` | BS (Binary Set) |
+| vector (`[1, "two", true]`) | L (List) |
+| object (`#{ key: "val" }`) | M (Map) |
+| `Some(value)` | (inner value) |
+| `None` | NULL |
+
+### Table creation options
+
+The `create_table` function supports two forms:
+
+```rust
+// Simple: partition key only (defaults to String type)
+db.create_table("my_table", "pk").await?;
+
+// Full: partition key + sort key with explicit types
+db.create_table("my_table", #{
+    primary_key: "pk",
+    sort_key: #{ name: "sk", type: "N" }  // "S", "N", or "B"
+}).await?;
+```
+
+## Context API Reference
+
+| Method | Description |
+|--------|-------------|
+| `db.create_table(name, schema)` | Create a DynamoDB table |
+| `db.delete_table(name)` | Delete a table (ignores errors if not found) |
+| `db.put(table, item)` | PutItem |
+| `db.get(table, key, options)` | GetItem |
+| `db.update(table, key, options)` | UpdateItem |
+| `db.delete(table, key)` | DeleteItem |
+| `db.query(table, options)` | Query |
+| `db.scan(table, options)` | Scan |
+| `db.batch_write_item(requests, options)` | BatchWriteItem |
+| `db.batch_get_item(requests, options)` | BatchGetItem |
+| `db.elapsed_secs()` | Seconds since workload start |
+
+## Example workloads
+
+Ready-to-use example workloads are available in [`workloads/alternator/`](workloads/alternator/):
+
+| File | Description |
+|------|-------------|
+| [`api_demo.rn`](workloads/alternator/api_demo.rn) | Full CRUD demo covering all operations |
+| [`batch_operations.rn`](workloads/alternator/batch_operations.rn) | Batch write/get/delete with assertions |
+| [`manual_batch_operations.rn`](workloads/alternator/manual_batch_operations.rn) | Handling unprocessed items in batch writes |
+| [`large_objects.rn`](workloads/alternator/large_objects.rn) | Large object insertion and retrieval benchmarks |
+| [`row_count_validation.rn`](workloads/alternator/row_count_validation.rn) | Query result row count validation with partition presets |
+| [`type_validation.rn`](workloads/alternator/type_validation.rn) | All supported DynamoDB data types with round-trip assertions |
