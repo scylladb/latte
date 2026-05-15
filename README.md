@@ -137,6 +137,41 @@ latte show <report.json> -b <previous report.json>  # to compare against baselin
 
 Run `latte --help` to display help with the available options.
 
+### Controlling Throughput
+
+Latte uses three key options to control how much load is generated:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--threads` (`-t`) | 1 | Number of worker threads |
+| `--concurrency` (`-p`) | 128 | Max concurrent async requests **per thread** |
+| `--rate` (`-r`) | unlimited | Target number of cycles per second (total) |
+
+Without `--rate`, Latte fires requests as fast as possible, bounded only by the total
+parallelism which equals `threads × concurrency`. With the defaults this means up to
+128 in-flight requests.
+
+When `--rate` is set, Latte tries to maintain the given request rate. However, `--rate`
+alone is not sufficient — the execution engine still needs enough concurrency slots to
+keep that many requests in flight. If `threads × concurrency` is too low to sustain the
+target rate (e.g. because each request takes longer than `threads × concurrency / rate`
+seconds), concurrency becomes the actual bottleneck and the target rate will never be
+reached, with no warning emitted.
+
+**Rule of thumb:** make sure that
+
+```
+threads × concurrency  ≥  rate × average_latency
+```
+
+For example, to sustain 10 000 req/s with an average latency of 5 ms you need at least
+`10000 × 0.005 = 50` concurrency slots. The default of `1 thread × 128 concurrency = 128`
+would be sufficient. But if your average latency is 50 ms, you'd need 500 slots — e.g.
+`-t 4 -p 128` (= 512) or `-t 1 -p 512`.
+
+When in doubt, increase `--concurrency` (or add threads) until the measured throughput
+matches your `--rate` target.
+
 ## Testing
 Latte has integration tests that run against a real ScyllaDB instance in a docker container. 
 To run them, execute: 
