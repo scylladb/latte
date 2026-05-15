@@ -68,9 +68,14 @@ pub async fn run(db, i) {
     db.put(TABLE, item).await?;
     
     // Retrieve the item and validate types
-    let result = db.get(TABLE, #{ pk: pk }, #{
-        with_result: true
-    }).await?.unwrap();
+    let result_wrapped = db.get(TABLE, #{ pk: pk }, #{
+        with_result: true,
+        consistent_read: true
+    }).await?;
+    if is_none(result_wrapped) {
+        db.signal_failure(`Expected item with pk='${pk}' to exist, but got 'None'`).await?;
+    }
+    let result = result_wrapped.unwrap();
 
     // The same can be achieved using query
     // let result = db.query(TABLE, #{
