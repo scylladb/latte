@@ -1,4 +1,9 @@
-# Lightweight Benchmarking Tool for Apache Cassandra and ScyllaDB
+# Lightweight Benchmarking Tool for Apache Cassandra, ScyllaDB and DynamoDB-compatible APIs
+
+| | |
+|---|---|
+| **CQL** (Cassandra / ScyllaDB) | You're in the right place — keep reading |
+| **DynamoDB / Alternator** | **[See ALTERNATOR.md](ALTERNATOR.md)** — full docs for `latte-alternator` |
 
 **Runs custom CQL workloads against a Cassandra cluster and measures throughput and response times**
 
@@ -79,17 +84,30 @@ user-defined data structures, objects, enums, constants, macros and many more.
 1. [Install Rust toolchain](https://rustup.rs/)
 2. Run `RUSTFLAGS="--cfg fetch_extended_version_info --cfg tokio_unstable" cargo install --path .`
 
+To build the **alternator** (DynamoDB-compatible) binary instead:
+
+```shell
+RUSTFLAGS="--cfg fetch_extended_version_info --cfg tokio_unstable" cargo install --path . --no-default-features --features alternator
+```
+
 ## From release binaries
 
 1. [Open Latte releases page on GitHub](https://github.com/scylladb/latte/releases)
 2. Click drop-down for `Assets` of any of the releases
-3. Download any available binary for a release
+3. Download `latte-<version>--<os>` for CQL or `latte-alternator-<version>--<os>` for Alternator
 
 ## From docker image
 
 1. [Open list of docker images](https://hub.docker.com/r/scylladb/latte/tags)
 2. Pull specific version like `docker pull scylladb/latte:0.42.1-scylladb`
 3. Or pull latest (alias for the greatest specific release) version like `docker pull scylladb/latte:latest`
+
+The docker image contains both `latte` (CQL) and `latte-alternator` binaries.
+The default entrypoint is `latte`. To use the alternator binary:
+
+```shell
+docker run --entrypoint latte-alternator scylladb/latte:<tag> <args>
+```
 
 ## Usage
 
