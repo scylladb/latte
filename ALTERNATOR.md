@@ -91,7 +91,7 @@ pub async fn run(db, i) {
         name: "Random Name",
         age: 20,
         tags: ["a", "b", "c"]
-    }).await?;
+    }, ()).await?;
 
     // GET
     let key = #{ pk: pk, sk: sk };
@@ -121,7 +121,7 @@ pub async fn run(db, i) {
     }).await?;
 
     // DELETE
-    db.delete(TABLE, key).await?;
+    db.delete(TABLE, key, ()).await?;
 }
 ```
 
@@ -214,7 +214,7 @@ pub async fn insert(db, i) {
     db.put(TABLE, #{
         id: (i % ROW_COUNT).to_string(),
         data: latte::text(i, OBJECT_SIZE)
-    }).await?;
+    }, ()).await?;
 }
 
 pub async fn run(db, i) {
@@ -292,7 +292,7 @@ async fn generate_row(i) {
 
 pub async fn write(db, i) {
     let row = generate_row(i).await;
-    db.put(TABLE, row).await?;
+    db.put(TABLE, row, ()).await?;
 }
 
 pub async fn read(db, i) {
@@ -405,6 +405,56 @@ The alternator driver supports all DynamoDB attribute value types:
 | `Some(value)` | (inner value) |
 | `None` | NULL |
 
+### Conditional expressions
+
+DynamoDB operations `put`, `delete`, and `update` support writing, deleting, or updating items conditionally based on a `condition_expression`.
+When the condition is not met, the operation will fail with a `ConditionalCheckFailedException` (which is caught and handled by Latte's execution engine).
+
+#### Put and delete operations with conditions
+
+For `put` and `delete`, the condition expression and its expression parameter/value mappings are specified in the optional third argument `options` object:
+
+```rust
+// PUT only if the item does not already exist
+db.put(TABLE, #{
+    pk: pk,
+    sk: sk,
+    name: "New User",
+    age: 25
+}, #{
+    condition_expression: "attribute_not_exists(pk)"
+}).await?;
+
+// DELETE only if the user is older than 18
+db.delete(TABLE, #{ pk: pk, sk: sk }, #{
+    condition_expression: "age > :min_age",
+    attribute_values: #{ ":min_age": 18 }
+}).await?;
+```
+
+If no options are needed for `put` or `delete`, pass `()` (unit) as the third argument:
+```rust
+db.put(TABLE, item, ()).await?;
+db.delete(TABLE, key, ()).await?;
+```
+
+#### Update operations with conditions
+
+For `update`, the condition expression and its parameter/value mappings are included directly inside the `params` (third) argument alongside the `update` expression itself:
+
+```rust
+// UPDATE only if the current age matches the expected age
+db.update(TABLE, #{ pk: pk, sk: sk }, #{
+    update: "SET #n = :new_name",
+    condition_expression: "age = :expected_age",
+    attribute_names: #{ "#n": "name" },
+    attribute_values: #{
+        ":new_name": "Updated Name",
+        ":expected_age": 21
+    }
+}).await?;
+```
+
 ### Table creation options
 
 The `create_table` function supports two forms:
@@ -426,10 +476,10 @@ db.create_table("my_table", #{
 |--------|-------------|
 | `db.create_table(name, schema)` | Create a DynamoDB table |
 | `db.delete_table(name)` | Delete a table (ignores errors if not found) |
-| `db.put(table, item)` | PutItem |
+| `db.put(table, item, options)` | PutItem |
 | `db.get(table, key, options)` | GetItem |
 | `db.update(table, key, options)` | UpdateItem |
-| `db.delete(table, key)` | DeleteItem |
+| `db.delete(table, key, options)` | DeleteItem |
 | `db.query(table, options)` | Query |
 | `db.scan(table, options)` | Scan |
 | `db.batch_write_item(requests, options)` | BatchWriteItem |
