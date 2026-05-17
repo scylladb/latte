@@ -338,6 +338,56 @@ Use `--validation-strategy` to control behavior on failure:
 - `retry` — retry the read (useful for eventually-consistent scenarios)
 - `ignore` — count failures but continue the benchmark
 
+### Projection expressions
+
+To retrieve only a subset of attributes rather than the entire item, you can use projection expressions in `get`, `query`, and `scan` operations. For `batch_get_item`, you can specify projection expressions on a per-table basis using an extended configuration object.
+
+If the projected attributes contain DynamoDB reserved words (such as `name`, `status`, or `data`), you can use expression attribute names to define placeholders (starting with `#`) and map them to their actual names in the `attribute_names` parameter.
+
+#### In GET, QUERY, and SCAN operations
+
+```rust
+// GET with projection expression and attribute names
+db.get(TABLE, key, #{
+    projection_expression: "#n, age",
+    attribute_names: #{ "#n": "name" }
+}).await?;
+
+// QUERY with projection expression
+db.query(TABLE, #{
+    query: "pk = :pk",
+    projection_expression: "#n, age",
+    attribute_names: #{ "#n": "name" },
+    attribute_values: #{ ":pk": pk }
+}).await?;
+
+// SCAN with projection expression
+db.scan(TABLE, #{
+    projection_expression: "pk, #d",
+    attribute_names: #{ "#d": "data" }
+}).await?;
+```
+
+#### In BATCH GET operations
+
+For `batch_get_item`, instead of a list of keys, each table in the requests map can be configured with an object containing `keys`, and optionally `projection_expression` and `attribute_names`:
+
+```rust
+let requests = #{};
+requests[TABLE] = #{
+    keys: [
+        #{ pk: "user_0" },
+        #{ pk: "user_1" }
+    ],
+    projection_expression: "pk, #d",
+    attribute_names: #{ "#d": "data" }
+};
+
+let result = db.batch_get_item(requests, #{
+    with_result: true
+}).await?;
+```
+
 The alternator driver supports all DynamoDB attribute value types:
 
 | Rune type | DynamoDB type |
