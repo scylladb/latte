@@ -3273,8 +3273,7 @@ dependencies = [
 [[package]]
 name = "rune"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7b9174512d64882469ea9b12876305680154a541be448dcdc56f58acacbc3e0"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "anyhow",
  "codespan-reporting",
@@ -3299,8 +3298,7 @@ dependencies = [
 [[package]]
 name = "rune-alloc"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f12484a608c8907b9a4590f11b669263e960d1fd40f3d3c992c6f15eec931ae9"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "ahash 0.8.12",
  "pin-project",
@@ -3311,8 +3309,7 @@ dependencies = [
 [[package]]
 name = "rune-alloc-macros"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "382b14f6d8e65e9cfec789e85125f3e1d758b2756705739e39ccf06fd249a564"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3322,8 +3319,7 @@ dependencies = [
 [[package]]
 name = "rune-core"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c424b28fde0f5012680361662145f238f04aeac8a320f352a6e2de863709e7b3"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "musli",
  "rune-alloc",
@@ -3334,8 +3330,7 @@ dependencies = [
 [[package]]
 name = "rune-macros"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c86600b36281adeb101c2e4f0be325752fa4c07431e9234e05be5678ad9a97f7"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3346,8 +3341,7 @@ dependencies = [
 [[package]]
 name = "rune-tracing"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0717a7c726015688a19ebfa4bea03a20d2acdd96eeacb5ef48f4ec780e11ac4b"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "rune-tracing-macros",
 ]
@@ -3355,8 +3349,7 @@ dependencies = [
 [[package]]
 name = "rune-tracing-macros"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12387f96a3e131ce5be8c5668e55f1581dbc6635555d77aa07ab509fd13562bb"
+source = "git+https://github.com/vponomaryov/rune.git?branch=fix-return-0.14.x#1eaa8a2dd50cd229f3c2eb94c6d74fb5bfb7dc07"
 dependencies = [
  "proc-macro2",
  "quote",
