@@ -19,6 +19,7 @@ FROM debian:trixie-slim AS production
 
 LABEL org.opencontainers.image.source="https://github.com/scylladb/latte"
 LABEL org.opencontainers.image.title="ScyllaDB latte benchmarking tool"
+LABEL com.scylladb.loader-type="latte"
 
 COPY --from=builder /usr/src/app/target/release/latte /usr/local/bin/latte
 COPY --from=builder /usr/src/app/target/release/latte-alternator /usr/local/bin/latte-alternator
