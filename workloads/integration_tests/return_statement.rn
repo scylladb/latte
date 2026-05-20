@@ -1,0 +1,54 @@
+use latte::*;
+
+const KEYSPACE = "ks_return_divergence";
+const TABLE = "t_return_divergence";
+const ROW_COUNT = 5000;
+
+pub async fn schema(db) {
+    db.execute(`CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
+        WITH REPLICATION = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}
+        AND durable_writes = true`).await?;
+    db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE} (
+        pk int PRIMARY KEY, val text
+    )`).await?;
+}
+
+pub async fn prepare(db) {
+    db.prepare("insert", `INSERT INTO ${KEYSPACE}.${TABLE} (pk, val) VALUES (:pk, :val)`).await?;
+    db.prepare("select", `SELECT * FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk`).await?;
+}
+
+/// return inside if/else — both branches diverge
+async fn get_idx(i, flag) {
+    if flag > 0 {
+        return i % ROW_COUNT;
+    } else {
+        return (i + 50) % ROW_COUNT;
+    }
+}
+
+/// return inside match — all arms diverge
+async fn get_value(db, idx) {
+    match idx % 3 {
+        0 => {
+            return "zero"
+        },
+        1 => {
+            return "one"
+        },
+        _ => {
+            return "other"
+        }
+    }
+}
+
+pub async fn write(db, i) {
+    let idx = get_idx(i, i % 2).await;
+    let val = get_value(db, idx).await;
+    db.execute_prepared("insert", [idx, val]).await?;
+}
+
+pub async fn read(db, i) {
+    let idx = get_idx(i, i % 2).await;
+    db.execute_prepared("select", [idx]).await?;
+}

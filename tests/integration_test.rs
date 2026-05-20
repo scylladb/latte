@@ -316,3 +316,30 @@ async fn test_latte_alternator_type_validation_workload() {
     assert_latte_success(&result);
     assert_has_throughput_metrics(&result);
 }
+
+/// Tests that `return` inside if/else and match arms in async functions
+/// compiles and executes correctly. This directly exercises the rune compiler
+/// divergence fix for both expr_if and expr_match
+/// Ref: https://github.com/rune-rs/rune/issues/1016
+#[tokio::test]
+#[ignore]
+async fn test_rune_return_in_diverging_branches() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("integration_tests/return_statement.rn");
+    let duration = "5000";
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    latte.schema(&db, &workload, &[]);
+
+    println!("\n[TEST-INFO] Phase 2: Write (exercises return in if/else and match)");
+    let write_result = latte.run(&db, &workload, duration, &["-f", "write"]);
+    assert_latte_success(&write_result);
+    assert_has_throughput_metrics(&write_result);
+
+    println!("\n[TEST-INFO] Phase 3: Read (exercises return in if/else)");
+    let read_result = latte.run(&db, &workload, duration, &["-f", "read"]);
+    assert_latte_success(&read_result);
+    assert_has_throughput_metrics(&read_result);
+}
