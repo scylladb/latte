@@ -484,13 +484,11 @@ impl Display for RunConfigCmp<'_> {
             self.line("Cluster", "", |conf| {
                 OptionDisplay(conf.cluster_name.clone())
             }),
-            #[cfg(feature = "cql")]
             self.line("Datacenter", "", |conf| {
-                conf.connection.db.datacenter.clone().unwrap_or_default()
+                OptionDisplay(conf.connection.datacenter.clone())
             }),
-            #[cfg(feature = "cql")]
             self.line("Rack", "", |conf| {
-                conf.connection.db.rack.clone().unwrap_or_default()
+                OptionDisplay(conf.connection.rack.clone())
             }),
             self.line("DB version", "", |conf| {
                 OptionDisplay(conf.db_version.clone())

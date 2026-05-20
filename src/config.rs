@@ -203,6 +203,19 @@ pub struct ConnectionConf {
     )]
     pub validation_strategy: ValidationStrategy,
 
+    /// Datacenter to route requests to.
+    #[clap(long("datacenter"), required = false, value_name = "DC")]
+    pub datacenter: Option<String>,
+
+    /// Rack to route requests to.
+    #[clap(
+        long("rack"),
+        required = false,
+        value_name = "RACK",
+        requires = "datacenter"
+    )]
+    pub rack: Option<String>,
+
     #[clap(flatten)]
     #[serde(flatten)]
     pub db: db_config::DbConnectionConf,

@@ -44,14 +44,6 @@ pub struct DbConnectionConf {
     #[clap(long("ssl-peer-verification"))]
     pub ssl_peer_verification: bool,
 
-    /// Datacenter name
-    #[clap(long("datacenter"), required = false)]
-    pub datacenter: Option<String>,
-
-    /// Rack name
-    #[clap(long("rack"), required = false)]
-    pub rack: Option<String>,
-
     /// CQL query consistency level.
     /// 'SERIAL' and 'LOCAL_SERIAL' values are compatible only with SELECT statements
     /// and make Scylla use Paxos consensus algorithm
