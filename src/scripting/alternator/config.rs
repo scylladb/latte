@@ -1,3 +1,4 @@
+use crate::config::parse_key_val;
 use clap::Parser;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,16 @@ pub enum AlternatorRequestCompressionMode {
     Zlib,
 }
 
+/// Alternator write isolation mode for partition-key affinity routing for the alternator-driver client.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum AlternatorKeyRouteAffinity {
+    #[default]
+    None,
+    Rmw,
+    AnyWrite,
+}
+
 const DEFAULT_COMPRESSION_THRESHOLD: usize = 1024;
 
 /// Alternator-driver connection options.
@@ -83,6 +94,36 @@ pub struct AlternatorConnectionOpts {
     /// Strip request headers not used by Alternator before transmit. If omitted, the driver default (true) applies.
     #[clap(long("optimize-headers"), required = false, value_name = "BOOL")]
     pub optimize_headers: Option<bool>,
+
+    /// Refresh interval in milliseconds for known nodes when active. If omitted, the driver default applies.
+    #[clap(long("active-interval"), required = false, value_name = "MS")]
+    pub active_interval: Option<u64>,
+
+    /// Refresh interval in milliseconds for known nodes when idle. If omitted, the driver default applies.
+    #[clap(long("idle-interval"), required = false, value_name = "MS")]
+    pub idle_interval: Option<u64>,
+
+    /// Whether to fall back to broader routing scopes if the preferred scope has no available nodes (e.g. rack -> dc -> cluster).
+    #[clap(long("routing-fallback"), required = false, value_name = "BOOL")]
+    pub routing_fallback: Option<bool>,
+
+    /// Partition-key affinity routing mode.
+    #[clap(
+        long("key-route-affinity"),
+        required = false,
+        value_name = "MODE",
+        value_enum
+    )]
+    pub key_route_affinity: Option<AlternatorKeyRouteAffinity>,
+
+    /// Pre-configured partition key attribute names for tables (e.g. `users=user_id`).
+    #[clap(
+        long("key-route-affinity-table"),
+        required = false,
+        value_parser = parse_key_val::<String, String>,
+        number_of_values = 1
+    )]
+    pub key_route_affinity_tables: Vec<(String, String)>,
 }
 
 /// Serde hook: missing `compression_threshold` in a report must not deserialize as `usize::default()` (0).
@@ -97,6 +138,11 @@ impl Default for AlternatorConnectionOpts {
             compression_threshold: default_compression_threshold(),
             compression_level: None,
             optimize_headers: None,
+            active_interval: None,
+            idle_interval: None,
+            routing_fallback: None,
+            key_route_affinity: None,
+            key_route_affinity_tables: Vec::new(),
         }
     }
 }
