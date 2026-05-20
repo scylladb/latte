@@ -1,3 +1,4 @@
+use super::address::normalize_address;
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
 use super::context::Context;
 use super::driver::create_client;
@@ -8,7 +9,17 @@ use aws_sdk_dynamodb::config::{Credentials, Region};
 use aws_sdk_dynamodb::error::DisplayErrorContext;
 
 pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> {
-    let address = conf.addresses.first().cloned().unwrap_or_default();
+    let address = conf
+        .addresses
+        .iter()
+        .find_map(|addr| normalize_address(addr))
+        .ok_or_else(|| {
+            AlternatorError(AlternatorErrorKind::FailedToConnect(
+                conf.addresses.join(", "),
+                "no valid address".to_string(),
+            ))
+        })?
+        .to_string();
 
     let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
         .endpoint_url(&address)
