@@ -12,7 +12,30 @@ env:
   RUSTFLAGS: "--cfg fetch_extended_version_info --cfg tokio_unstable"
 
 jobs:
+  verify_version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != "$CARGO_VERSION" ]]; then
+            echo "::error::Tag '$TAG' does not match Cargo.toml version '$CARGO_VERSION'"
+            exit 1
+          fi
+      - name: Verify release does not already exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" &>/dev/null; then
+            echo "::error::Release '$TAG' already exists"
+            exit 1
+          fi
+
   get_tag:
+    needs: [verify_version]
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version_tag.outputs.tag }}
@@ -27,6 +50,7 @@ jobs:
           tagRegex: "(.*)"
 
   release:
+    needs: [verify_version]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
