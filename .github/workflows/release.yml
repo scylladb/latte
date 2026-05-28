@@ -24,15 +24,6 @@ jobs:
             echo "::error::Tag '$TAG' does not match Cargo.toml version '$CARGO_VERSION'"
             exit 1
           fi
-      - name: Verify release does not already exist
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" &>/dev/null; then
-            echo "::error::Release '$TAG' already exists"
-            exit 1
-          fi
 
   get_tag:
     needs: [verify_version]
