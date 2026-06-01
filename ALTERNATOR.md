@@ -3,11 +3,10 @@
 **Benchmarks DynamoDB-compatible APIs (Amazon DynamoDB, ScyllaDB Alternator) using the same engine as CQL-based Latte**
 
 Latte ships a dedicated `latte-alternator` binary that speaks the DynamoDB protocol instead of CQL.
-It uses the AWS SDK for Rust under the hood and supports all the same execution features
-(async engine, rate/concurrency limiting, HDR histograms, reports, comparisons, etc.).
-
-> **Note:** The AWS SDK driver is planned to be replaced with the dedicated ScyllaDB Alternator driver,
-> which is currently under active development. The workload API will remain the same.
+It uses the dedicated ScyllaDB alternator-driver under the hood and supports all the same execution
+features (async engine, rate/concurrency limiting, HDR histograms, reports, comparisons, etc.), plus
+extra driver tuning options (datacenter/rack-aware routing, request compression, header optimization,
+node-refresh intervals and partition-key route affinity — see [Driver tuning](#driver-tuning)).
 
 ## Installation
 
@@ -54,6 +53,53 @@ where authentication is not required, you can set dummy credentials:
 export AWS_ACCESS_KEY_ID=dummy
 export AWS_SECRET_ACCESS_KEY=dummy
 export AWS_DEFAULT_REGION=us-east-1
+```
+
+### Driver tuning
+
+`latte-alternator` accepts a set of additional options that tune the underlying ScyllaDB
+alternator-driver. Unless noted otherwise, omitting an option leaves the driver default in place.
+
+#### Routing and load balancing
+
+`--datacenter` and `--rack` make the driver prefer nodes in the given datacenter and rack, narrowing
+the routing scope (rack → datacenter → whole cluster). `--routing-fallback` controls whether the
+driver falls back to a broader scope when the preferred one has no available nodes.
+
+| Option | Value | Default | Description |
+|--------|-------|---------|-------------|
+| `--datacenter` | `DC` | — | Datacenter to route requests to |
+| `--rack` | `RACK` | — | Rack to route requests to |
+| `--routing-fallback` | `BOOL` | driver default | Fall back to broader scopes (rack → dc → cluster) if the preferred scope has no nodes |
+| `--active-interval` | `MS` | driver default | Refresh interval for the known-nodes list while active |
+| `--idle-interval` | `MS` | driver default | Refresh interval for the known-nodes list while idle |
+| `--key-route-affinity` | `none` \| `rmw` \| `any-write` | `none` | Alternator write isolation mode for partition-key affinity routing |
+| `--key-route-affinity-table` | `TABLE=PK` | — | Pre-configured partition-key attribute name for a table (repeatable, e.g. `users=user_id`) |
+
+#### Request compression
+
+| Option | Value | Default | Description |
+|--------|-------|---------|-------------|
+| `--request-compression` | `driver-default` \| `off` \| `gzip` \| `zlib` | `driver-default` | How to compress request bodies before signing |
+| `--compression-threshold` | `BYTES` | `1024` | Minimum uncompressed body size before compression applies (`gzip` / `zlib` only) |
+| `--compression-level` | `1`–`9` | driver default | Deflate compression level (`gzip` / `zlib` only) |
+
+#### Headers
+
+| Option | Value | Default | Description |
+|--------|-------|---------|-------------|
+| `--optimize-headers` | `BOOL` | driver default (`true`) | Strip request headers not used by Alternator before transmit |
+
+Example invocations:
+
+```shell
+# Route to a specific datacenter and rack, with gzip request compression
+latte-alternator run workloads/alternator/api_demo.rn http://<host>:8000 \
+    --datacenter dc1 --rack rack1 --request-compression gzip --compression-level 6
+
+# Enable read-modify-write partition-key affinity for a table
+latte-alternator run workloads/alternator/api_demo.rn http://<host>:8000 \
+    --key-route-affinity rmw --key-route-affinity-table users=user_id
 ```
 
 ## Workloads

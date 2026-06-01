@@ -90,6 +90,10 @@ To build the **alternator** (DynamoDB-compatible) binary instead:
 RUSTFLAGS="--cfg fetch_extended_version_info --cfg tokio_unstable" cargo install --path . --no-default-features --features alternator
 ```
 
+This produces the `latte-alternator` binary, which talks to ScyllaDB Alternator through the dedicated
+ScyllaDB alternator-driver. It exposes the same workload API as `latte` plus extra driver tuning
+options — see [ALTERNATOR.md](ALTERNATOR.md).
+
 ## From release binaries
 
 1. [Open Latte releases page on GitHub](https://github.com/scylladb/latte/releases)
