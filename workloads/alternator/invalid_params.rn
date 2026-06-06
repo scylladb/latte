@@ -152,6 +152,24 @@ pub async fn run(db, i) {
         filter: 123
     }).await, "scan", "filter");
 
+    // Scan: segment must be integer and within range
+    assert_bad_param(db.scan(TABLE, #{
+        segment: "1"
+    }).await, "scan", "segment");
+
+    assert_bad_param(db.scan(TABLE, #{
+        segment: 1099511627776
+    }).await, "scan", "segment is out of range");
+
+    // Scan: total_segments must be integer and within range
+    assert_bad_param(db.scan(TABLE, #{
+        total_segments: "5"
+    }).await, "scan", "total_segments");
+
+    assert_bad_param(db.scan(TABLE, #{
+        total_segments: 1099511627776
+    }).await, "scan", "total_segments is out of range");
+
     // Create Table: primary_key must be object or string
     assert_bad_param(db.create_table("fail_table", #{
         primary_key: 123
