@@ -22,6 +22,8 @@ pub const PROJECTION_EXPRESSION_KEY: &str = "projection_expression";
 pub const UPDATE_EXPRESSION_KEY: &str = "update";
 pub const QUERY_EXPRESSION_KEY: &str = "query";
 pub const FILTER_EXPRESSION_KEY: &str = "filter";
+pub const SEGMENT_KEY: &str = "segment";
+pub const TOTAL_SEGMENTS_KEY: &str = "total_segments";
 
 fn alternator_set_to_rune<I, T, F>(key: &str, iter: I, wrapper: F) -> Result<Value, AlternatorError>
 where

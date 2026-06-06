@@ -1149,6 +1149,8 @@ pub async fn query(
 ///   - `limit`: The maximum number of items to evaluate (optional).
 ///   - `validation`: An optional item count validation. Look at [extract_validation_args] for details.
 ///   - `with_result`: If true, the scan result is returned (default: false).
+///   - `segment`: The segment to scan (optional).
+///   - `total_segments`: The total number of segments (optional).
 #[rune::function(instance)]
 pub async fn scan(
     ctx: Ref<Context>,
@@ -1171,8 +1173,32 @@ pub async fn scan(
             LIMIT_KEY,
             VALIDATION_KEY,
             WITH_RESULT_KEY,
+            SEGMENT_KEY,
+            TOTAL_SEGMENTS_KEY,
         ],
     )?;
+
+    if let Some(v) = params.get(SEGMENT_KEY) {
+        if let Ok(i) = v.as_signed() {
+            builder = builder.segment(match i32::try_from(i) {
+                Ok(val) => val,
+                Err(_) => return bad_input(format!("'{}' is out of range", SEGMENT_KEY)),
+            });
+        } else {
+            return bad_input(format!("'{}' must be an integer", SEGMENT_KEY));
+        }
+    }
+
+    if let Some(v) = params.get(TOTAL_SEGMENTS_KEY) {
+        if let Ok(i) = v.as_signed() {
+            builder = builder.total_segments(match i32::try_from(i) {
+                Ok(val) => val,
+                Err(_) => return bad_input(format!("'{}' is out of range", TOTAL_SEGMENTS_KEY)),
+            });
+        } else {
+            return bad_input(format!("'{}' must be an integer", TOTAL_SEGMENTS_KEY));
+        }
+    }
 
     if let Some(v) = params.get(FILTER_EXPRESSION_KEY) {
         if let Ok(s) = v.borrow_ref::<rune::alloc::String>() {
