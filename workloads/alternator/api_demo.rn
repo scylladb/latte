@@ -122,6 +122,16 @@ pub async fn run(db, i) {
         }
     }).await?;
 
+    // SCAN with segments
+    db.scan(TABLE, #{
+        filter: "age > :min_age",
+        "attribute_values": #{
+            ":min_age": 18
+        },
+        "segment": 1,
+        "total_segments": 5
+    }).await?;
+
     // DELETE Item
     db.delete(TABLE, key, ()).await?;
 }
