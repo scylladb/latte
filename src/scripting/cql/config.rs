@@ -190,3 +190,43 @@ impl ValueEnum for SerialConsistency {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_without_password_field() {
+        // Simulates reading a report that was generated with skip_serializing/skip:
+        // the password field is absent from JSON.
+        let json = r#"{
+            "count": 1,
+            "user": "",
+            "ssl": false,
+            "ssl_peer_verification": false,
+            "consistency": "LocalQuorum",
+            "serial_consistency": "LocalSerial"
+        }"#;
+        let conf: DbConnectionConf = serde_json::from_str(json).unwrap();
+        assert_eq!(conf.password, "");
+    }
+
+    #[test]
+    fn deserialize_with_password_field_ignores_it() {
+        // Backwards compatibility: if an older report somehow contains the password field,
+        // deserialization should still succeed (serde(skip) ignores unknown/skipped fields
+        // when deny_unknown_fields is not set).
+        let json = r#"{
+            "count": 1,
+            "user": "",
+            "password": "secret123",
+            "ssl": false,
+            "ssl_peer_verification": false,
+            "consistency": "LocalQuorum",
+            "serial_consistency": "LocalSerial"
+        }"#;
+        let conf: DbConnectionConf = serde_json::from_str(json).unwrap();
+        // serde(skip) means the field is always defaulted, even if present in input
+        assert_eq!(conf.password, "");
+    }
+}
