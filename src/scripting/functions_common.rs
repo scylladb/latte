@@ -326,13 +326,44 @@ pub fn elapsed_secs(ctx: &Context) -> f64 {
     ctx.start_time.try_lock().unwrap().elapsed().as_secs_f64()
 }
 
+/// Rejects calls that write run-level report state from a worker-cloned
+/// context: workers operate on per-thread copies that are never merged back,
+/// so such writes would be silently lost.
+fn reject_in_workload(ctx: &Context, function: &str) -> Result<(), VmError> {
+    if ctx.is_worker_clone {
+        return Err(VmError::panic(format!(
+            "{function} is only allowed in single-threaded setup functions \
+             such as prepare, schema or erase; called from a workload function \
+             it would have no effect. Use record_metric for per-cycle values."
+        )));
+    }
+    Ok(())
+}
+
+/// Rejects per-cycle calls from a setup function (prepare/schema/erase): those
+/// run on the original context whose stats are reset before the run, so the
+/// value would be silently dropped. The mirror of `reject_in_workload`.
+fn reject_in_setup(ctx: &Context, function: &str) -> Result<(), VmError> {
+    if !ctx.is_worker_clone {
+        return Err(VmError::panic(format!(
+            "{function} only takes effect inside workload functions; called from \
+             a setup function such as prepare, schema or erase its value would be \
+             discarded before the run."
+        )));
+    }
+    Ok(())
+}
+
 #[rune::function(instance)]
-pub fn set_report_field(ctx: &Context, key: Ref<str>, value: Ref<str>) {
+pub fn set_report_field(ctx: &Context, key: Ref<str>, value: Ref<str>) -> VmResult<()> {
+    vm_try!(reject_in_workload(ctx, "set_report_field"));
     ctx.set_report_field(&key, &value);
+    VmResult::Ok(())
 }
 
 #[rune::function(instance)]
 pub fn record_metric(ctx: &Context, name: Ref<str>, value: f64) -> VmResult<()> {
+    vm_try!(reject_in_setup(ctx, "record_metric"));
     if !value.is_finite() {
         return VmResult::panic(format!(
             "record_metric: value for metric \"{}\" must be a finite number, got {value}",
@@ -345,6 +376,7 @@ pub fn record_metric(ctx: &Context, name: Ref<str>, value: f64) -> VmResult<()> 
 
 #[rune::function(instance)]
 pub fn declare_metric(ctx: &Context, name: Ref<str>, orientation: Ref<str>) -> VmResult<()> {
+    vm_try!(reject_in_workload(ctx, "declare_metric"));
     let orientation = vm_try!(match &*orientation {
         "higher" => Ok(1),
         "lower" => Ok(-1),
@@ -354,4 +386,65 @@ pub fn declare_metric(ctx: &Context, name: Ref<str>, orientation: Ref<str>) -> V
     });
     ctx.declare_metric(&name, orientation);
     VmResult::Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::config::{RetryInterval, ValidationStrategy};
+
+    #[cfg(feature = "cql")]
+    fn test_context() -> Context {
+        Context::new(
+            None,
+            501,
+            "dc".to_string(),
+            "rack".to_string(),
+            0,
+            RetryInterval::new("1,2").expect("failed to parse retry interval"),
+            ValidationStrategy::Ignore,
+        )
+    }
+
+    #[cfg(all(feature = "alternator", not(feature = "cql")))]
+    fn test_context() -> Context {
+        Context::new(
+            None,
+            0,
+            RetryInterval::new("1,2").expect("failed to parse retry interval"),
+            ValidationStrategy::Ignore,
+            0,
+        )
+    }
+
+    #[test]
+    fn worker_clone_flag_propagates() {
+        let original = test_context();
+        assert!(!original.is_worker_clone);
+        assert!(!original.shallow_clone().is_worker_clone);
+
+        let worker = original.clone().unwrap();
+        assert!(worker.is_worker_clone);
+        assert!(worker.shallow_clone().is_worker_clone);
+    }
+
+    #[test]
+    fn report_state_writes_rejected_in_worker_clone() {
+        let original = test_context();
+        assert!(reject_in_workload(&original, "set_report_field").is_ok());
+        assert!(reject_in_workload(&original, "declare_metric").is_ok());
+
+        let worker = original.clone().unwrap();
+        assert!(reject_in_workload(&worker, "set_report_field").is_err());
+        assert!(reject_in_workload(&worker, "declare_metric").is_err());
+    }
+
+    #[test]
+    fn record_metric_rejected_in_setup_context() {
+        let original = test_context();
+        assert!(reject_in_setup(&original, "record_metric").is_err());
+
+        let worker = original.clone().unwrap();
+        assert!(reject_in_setup(&worker, "record_metric").is_ok());
+    }
 }

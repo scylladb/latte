@@ -51,6 +51,10 @@ pub struct Context {
     pub preferred_datacenter: String,
     #[rune(get)]
     pub preferred_rack: String,
+    /// True on per-worker deep copies made by [`Context::clone`].
+    /// Run-level state written through such a copy (report metadata, metric
+    /// orientations) is never merged back, so the scripting API rejects those calls.
+    pub is_worker_clone: bool,
     #[rune(get)]
     pub data: Value,
 }
@@ -90,6 +94,7 @@ impl Context {
             load_cycle_count: 0,
             preferred_datacenter,
             preferred_rack,
+            is_worker_clone: false,
             data,
         }
     }
@@ -121,6 +126,7 @@ impl Context {
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
             preferred_rack: self.preferred_rack.clone(),
+            is_worker_clone: true,
             data: deserialized,
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
         })
@@ -145,6 +151,7 @@ impl Context {
             load_cycle_count: self.load_cycle_count,
             preferred_datacenter: self.preferred_datacenter.clone(),
             preferred_rack: self.preferred_rack.clone(),
+            is_worker_clone: self.is_worker_clone,
             data: self.data.clone(),
         }
     }

@@ -26,6 +26,10 @@ pub struct Context {
     pub partition_row_presets: Arc<TryLock<HashMap<String, RowDistributionPreset>>>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
+    /// True on per-worker deep copies made by [`Context::clone`].
+    /// Run-level state written through such a copy (report metadata, metric
+    /// orientations) is never merged back, so the scripting API rejects those calls.
+    pub is_worker_clone: bool,
     #[rune(get)]
     pub data: Value,
 }
@@ -53,6 +57,7 @@ impl Context {
             validation_strategy,
             partition_row_presets: Arc::new(TryLock::new(HashMap::new())),
             load_cycle_count: 0,
+            is_worker_clone: false,
             data: Value::new(Object::new()).unwrap(),
         }
     }
@@ -78,6 +83,7 @@ impl Context {
                 self.partition_row_presets.try_lock().unwrap().clone(),
             )),
             load_cycle_count: self.load_cycle_count,
+            is_worker_clone: true,
             data: deserialized,
         })
     }
@@ -97,6 +103,7 @@ impl Context {
             validation_strategy: self.validation_strategy,
             partition_row_presets: Arc::clone(&self.partition_row_presets),
             load_cycle_count: self.load_cycle_count,
+            is_worker_clone: self.is_worker_clone,
             data: self.data.clone(),
         }
     }
