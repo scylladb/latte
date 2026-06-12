@@ -424,6 +424,23 @@ impl BenchmarkCmp<'_> {
     pub fn cmp_resp_time_percentile(&self, p: Percentile) -> Option<Significance> {
         self.cmp(|s| s.request_latency.as_ref().map(|r| r.percentiles.get(p)))
     }
+
+    /// Checks if the mean of a workload-defined metric of two benchmark runs
+    /// is significantly different. Returns None if the second benchmark is unset.
+    pub fn cmp_mean_custom_metric(&self, name: &str) -> Option<Significance> {
+        self.cmp(|s| s.custom_metrics.get(name).map(|m| m.distribution.mean))
+    }
+
+    /// Checks if corresponding percentiles of a workload-defined metric of two
+    /// benchmark runs are significantly different.
+    /// Returns None if the second benchmark is unset.
+    pub fn cmp_custom_metric_percentile(&self, name: &str, p: Percentile) -> Option<Significance> {
+        self.cmp(|s| {
+            s.custom_metrics
+                .get(name)
+                .map(|m| m.distribution.percentiles.get(p))
+        })
+    }
 }
 
 /// Observes requests and computes their statistics such as mean throughput, mean response time,
@@ -748,6 +765,38 @@ mod test {
             .remove("orientation");
         let parsed: super::BenchmarkStats = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.custom_metrics.get("recall").unwrap().orientation, 0);
+    }
+
+    #[test]
+    fn cmp_custom_metric_computes_significance() {
+        let recall_metric = |values: &[f64]| {
+            let mut recorder = crate::stats::value::ValueDistributionRecorder::default();
+            for v in values {
+                recorder.record(crate::stats::value::MetricValue(*v));
+            }
+            super::CustomMetric {
+                distribution: recorder.distribution_with_errors(),
+                orientation: 1,
+            }
+        };
+        let mut v1 = sample_benchmark_stats();
+        let mut v2 = sample_benchmark_stats();
+        v1.custom_metrics
+            .insert("recall".to_string(), recall_metric(&[0.97, 0.98, 0.99]));
+        v2.custom_metrics
+            .insert("recall".to_string(), recall_metric(&[0.97, 0.98, 0.99]));
+
+        let cmp = super::BenchmarkCmp {
+            v1: &v1,
+            v2: Some(&v2),
+        };
+        // Identical distributions must not be reported as significantly different.
+        let significance = cmp.cmp_mean_custom_metric("recall").unwrap();
+        assert!(significance.0 > 0.05);
+        assert!(cmp.cmp_mean_custom_metric("no_such_metric").is_none());
+
+        let single = super::BenchmarkCmp { v1: &v1, v2: None };
+        assert!(single.cmp_mean_custom_metric("recall").is_none());
     }
 
     #[test]
