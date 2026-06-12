@@ -820,19 +820,32 @@ impl Display for BenchmarkCmp<'_> {
                 writeln!(f, "{}", fmt_cmp_header(true))?;
             }
 
-            let l = self.line("Mean", "", |s| {
-                Quantity::from(s.custom_metrics.get(name).map(|m| m.distribution.mean))
-                    .with_precision(4)
-            });
+            let orientation = self
+                .v1
+                .custom_metrics
+                .get(name)
+                .or_else(|| self.v2.and_then(|v2| v2.custom_metrics.get(name)))
+                .map(|m| m.orientation)
+                .unwrap_or(0);
+            let l = self
+                .line("Mean", "", |s| {
+                    Quantity::from(s.custom_metrics.get(name).map(|m| m.distribution.mean))
+                        .with_precision(4)
+                })
+                .with_significance(self.cmp_mean_custom_metric(name))
+                .with_orientation(orientation);
             writeln!(f, "{l}")?;
             for p in resp_time_percentiles.iter() {
-                let l = self.line(p.name(), "", |s| {
-                    let v = s
-                        .custom_metrics
-                        .get(name)
-                        .map(|m| m.distribution.percentiles.get(*p));
-                    Quantity::from(v).with_precision(4)
-                });
+                let l = self
+                    .line(p.name(), "", |s| {
+                        let v = s
+                            .custom_metrics
+                            .get(name)
+                            .map(|m| m.distribution.percentiles.get(*p));
+                        Quantity::from(v).with_precision(4)
+                    })
+                    .with_significance(self.cmp_custom_metric_percentile(name, *p))
+                    .with_orientation(orientation);
                 writeln!(f, "{l}")?;
             }
         }
