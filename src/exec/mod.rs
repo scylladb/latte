@@ -342,7 +342,8 @@ pub async fn par_execute(
         let partial_stats = receive_one_of_each(&mut streams).await;
         let partial_stats: Vec<_> = partial_stats.into_iter().try_collect()?;
         if partial_stats.is_empty() {
-            break Ok(stats.finish());
+            let run_metadata = workload.context().report_metadata_snapshot();
+            break Ok(stats.finish(run_metadata));
         }
 
         let aggregate = stats.record(&partial_stats);

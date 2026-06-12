@@ -325,3 +325,8 @@ pub async fn signal_failure(_ctx: Ref<Context>, message: Ref<str>) -> Result<(),
 pub fn elapsed_secs(ctx: &Context) -> f64 {
     ctx.start_time.try_lock().unwrap().elapsed().as_secs_f64()
 }
+
+#[rune::function(instance)]
+pub fn set_report_field(ctx: &Context, key: Ref<str>, value: Ref<str>) {
+    ctx.set_report_field(&key, &value);
+}

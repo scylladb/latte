@@ -334,6 +334,8 @@ pub struct BenchmarkStats {
     pub request_latency: Option<LatencyDistribution>,
     pub concurrency: Mean,
     pub concurrency_ratio: f64,
+    #[serde(default)]
+    pub run_metadata: HashMap<String, String>,
     pub log: Vec<Sample>,
 }
 
@@ -531,7 +533,7 @@ impl Recorder<'_> {
     }
 
     /// Stops the recording, computes the statistics and returns them as the new object.
-    pub fn finish(mut self) -> BenchmarkStats {
+    pub fn finish(mut self, run_metadata: HashMap<String, String>) -> BenchmarkStats {
         self.end_time = SystemTime::now();
         self.end_instant = Instant::now();
         self.end_cpu_time = ProcessTime::now();
@@ -590,6 +592,7 @@ impl Recorder<'_> {
             },
             concurrency,
             concurrency_ratio,
+            run_metadata,
             log: self.log,
         }
     }
@@ -598,6 +601,68 @@ impl Recorder<'_> {
 #[cfg(test)]
 mod test {
     use crate::stats::{ln_gamma, regularized_incomplete_beta, students_t_cdf, t_test, Mean};
+
+    fn sample_benchmark_stats() -> super::BenchmarkStats {
+        use super::latency::LatencyDistributionRecorder;
+        let mean = Mean {
+            n: 1,
+            value: 1.0,
+            std_err: None,
+        };
+        super::BenchmarkStats {
+            start_time: chrono::Local::now(),
+            end_time: chrono::Local::now(),
+            elapsed_time_s: 1.0,
+            cpu_time_s: 0.5,
+            cpu_util: 50.0,
+            cycle_count: 10,
+            request_count: 10,
+            requests_per_cycle: 1.0,
+            request_retry_count: 0,
+            request_retry_per_request: Some(0.0),
+            errors: Vec::new(),
+            error_count: 0,
+            errors_ratio: Some(0.0),
+            row_count: 0,
+            row_count_per_req: Some(0.0),
+            cycle_throughput: mean,
+            cycle_throughput_ratio: None,
+            req_throughput: mean,
+            row_throughput: mean,
+            cycle_latency: LatencyDistributionRecorder::default().distribution(),
+            cycle_latency_by_fn: std::collections::HashMap::new(),
+            request_latency: None,
+            concurrency: mean,
+            concurrency_ratio: 100.0,
+            run_metadata: std::collections::HashMap::new(),
+            log: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn benchmark_stats_run_metadata_roundtrips_through_json() {
+        let mut stats = sample_benchmark_stats();
+        stats
+            .run_metadata
+            .insert("dataset".to_string(), "test_dataset".to_string());
+
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: super::BenchmarkStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.run_metadata.get("dataset"),
+            Some(&"test_dataset".to_string())
+        );
+    }
+
+    #[test]
+    fn benchmark_stats_without_run_metadata_still_loads() {
+        // Reports generated before the run_metadata field existed must keep loading.
+        let json = serde_json::to_string(&sample_benchmark_stats()).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value.as_object_mut().unwrap().remove("run_metadata");
+        let parsed: super::BenchmarkStats = serde_json::from_value(value).unwrap();
+        assert!(parsed.run_metadata.is_empty());
+    }
 
     #[test]
     fn ln_gamma_known_values() {

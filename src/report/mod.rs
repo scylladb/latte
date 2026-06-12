@@ -668,6 +668,27 @@ impl BenchmarkCmp<'_> {
 /// Formats all benchmark stats
 impl Display for BenchmarkCmp<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if !self.v1.run_metadata.is_empty() {
+            writeln!(f, "{}", fmt_section_header("RUN METADATA"))?;
+            if self.v2.is_some() {
+                writeln!(f, "{}", fmt_cmp_header(true))?;
+            }
+            let keys = self
+                .v1
+                .run_metadata
+                .keys()
+                .chain(self.v2.iter().flat_map(|v2| v2.run_metadata.keys()))
+                .sorted()
+                .dedup();
+            for key in keys {
+                let l = self.line(key, "", |s| {
+                    s.run_metadata.get(key).cloned().unwrap_or_default()
+                });
+                writeln!(f, "{l}")?;
+            }
+            writeln!(f)?;
+        }
+
         writeln!(f, "{}", fmt_section_header("SUMMARY STATS"))?;
         if self.v2.is_some() {
             writeln!(f, "{}", fmt_cmp_header(true))?;
