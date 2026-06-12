@@ -17,6 +17,7 @@ pub struct Context {
     client: Option<Client>,
     page_size: u64,
     pub stats: Arc<TryLock<SessionStats>>,
+    pub report_metadata: Arc<TryLock<HashMap<String, String>>>,
     pub start_time: TryLock<Instant>,
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
@@ -43,6 +44,7 @@ impl Context {
             client,
             page_size,
             stats: Arc::new(TryLock::new(SessionStats::new())),
+            report_metadata: Arc::new(TryLock::new(HashMap::new())),
             start_time: TryLock::new(Instant::now()),
             retry_number,
             retry_interval,
@@ -60,6 +62,9 @@ impl Context {
             client: self.client.clone(),
             page_size: self.page_size,
             stats: Arc::new(TryLock::new(SessionStats::default())),
+            report_metadata: Arc::new(TryLock::new(
+                self.report_metadata.try_lock().unwrap().clone(),
+            )),
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
@@ -79,6 +84,7 @@ impl Context {
             client: self.client.clone(),
             page_size: self.page_size,
             stats: Arc::clone(&self.stats),
+            report_metadata: Arc::clone(&self.report_metadata),
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
@@ -141,6 +147,17 @@ impl Context {
 
         // We couldn't determine the cluster info.
         Ok(None)
+    }
+
+    pub fn set_report_field(&self, key: &str, value: &str) {
+        self.report_metadata
+            .try_lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+    }
+
+    pub fn report_metadata_snapshot(&self) -> HashMap<String, String> {
+        self.report_metadata.try_lock().unwrap().clone()
     }
 
     pub fn take_session_stats(&self) -> SessionStats {

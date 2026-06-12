@@ -39,6 +39,7 @@ pub struct Context {
     page_size: u64,
     statements: Arc<TryLock<HashMap<String, Arc<PreparedStatement>>>>,
     pub stats: Arc<TryLock<SessionStats>>,
+    pub report_metadata: Arc<TryLock<HashMap<String, String>>>,
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
@@ -79,6 +80,7 @@ impl Context {
             page_size,
             statements: Arc::new(TryLock::new(HashMap::new())),
             stats: Arc::new(TryLock::new(SessionStats::new())),
+            report_metadata: Arc::new(TryLock::new(HashMap::new())),
             retry_number,
             retry_interval,
             validation_strategy,
@@ -102,6 +104,9 @@ impl Context {
             page_size: self.page_size,
             statements: Arc::new(TryLock::new(self.statements.try_lock().unwrap().clone())),
             stats: Arc::new(TryLock::new(SessionStats::default())),
+            report_metadata: Arc::new(TryLock::new(
+                self.report_metadata.try_lock().unwrap().clone(),
+            )),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
@@ -126,6 +131,7 @@ impl Context {
             page_size: self.page_size,
             statements: Arc::clone(&self.statements),
             stats: Arc::clone(&self.stats),
+            report_metadata: Arc::clone(&self.report_metadata),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
@@ -567,6 +573,17 @@ impl Context {
                 "'session' is not defined".to_string(),
             ))),
         }
+    }
+
+    pub fn set_report_field(&self, key: &str, value: &str) {
+        self.report_metadata
+            .try_lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+    }
+
+    pub fn report_metadata_snapshot(&self) -> HashMap<String, String> {
+        self.report_metadata.try_lock().unwrap().clone()
     }
 
     /// Returns the current accumulated request stats snapshot and resets the stats.
