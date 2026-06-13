@@ -49,7 +49,7 @@ regex = "1.5"
 rune = "0.14.2"
 rust_decimal = "1.36"
 rust-embed = "8"
-scylla = { version = "1.6", features = ["openssl-010", "chrono-04"], optional = true }
+scylla = { version = "1.7.0", features = ["openssl-010", "chrono-04"], optional = true }
 # Needed because Rust Driver doesn't reexport VectorIterator. After it starts reexporting it,
 # this dependency can be removed.
 scylla-cql = { version = "1.6", optional = true }
