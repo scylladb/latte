@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::exec::workload::WorkloadStats;
 use crate::stats::latency::{LatencyDistribution, LatencyDistributionRecorder};
+use crate::stats::value::{ValueDistribution, ValueDistributionRecorder};
 use cpu_time::ProcessTime;
 use hdrhistogram::serialization::interval_log;
 use percentiles::Percentile;
@@ -19,8 +20,10 @@ pub mod histogram;
 pub mod latency;
 pub mod percentiles;
 pub mod session;
+pub mod signed_histogram;
 pub mod throughput;
 pub mod timeseries;
+pub mod value;
 
 /// Computes the natural logarithm of the gamma function using the Lanczos approximation.
 /// See: https://en.wikipedia.org/wiki/Lanczos_approximation
@@ -233,6 +236,8 @@ pub struct Sample {
     pub cycle_latency: LatencyDistribution,
     pub cycle_latency_by_fn: HashMap<String, LatencyDistribution>,
     pub request_latency: LatencyDistribution,
+    #[serde(default)]
+    pub custom_metrics: HashMap<String, ValueDistribution>,
 }
 
 impl Sample {
@@ -253,11 +258,18 @@ impl Sample {
         let mut request_latency = LatencyDistributionRecorder::default();
         let mut cycle_latency = LatencyDistributionRecorder::default();
         let mut cycle_latency_per_fn = HashMap::<String, LatencyDistributionRecorder>::new();
+        let mut custom_metrics = HashMap::<String, ValueDistributionRecorder>::new();
 
         for s in stats {
             let ss = &s.session_stats;
             request_count += ss.req_count;
             row_count += ss.row_count;
+            for (name, recorder) in &ss.custom_metrics {
+                custom_metrics
+                    .entry(name.clone())
+                    .or_default()
+                    .add(recorder);
+            }
             if errors.len() < MAX_KEPT_ERRORS {
                 errors.extend(ss.req_errors.iter().cloned());
             }
@@ -303,6 +315,11 @@ impl Sample {
                 .collect(),
 
             request_latency: request_latency.distribution(),
+
+            custom_metrics: custom_metrics
+                .into_iter()
+                .map(|(k, v)| (k, v.distribution()))
+                .collect(),
         }
     }
 }
@@ -332,11 +349,23 @@ pub struct BenchmarkStats {
     pub cycle_latency: LatencyDistribution,
     pub cycle_latency_by_fn: HashMap<String, LatencyDistribution>,
     pub request_latency: Option<LatencyDistribution>,
+    #[serde(default)]
+    pub custom_metrics: HashMap<String, CustomMetric>,
     pub concurrency: Mean,
     pub concurrency_ratio: f64,
     #[serde(default)]
     pub run_metadata: HashMap<String, String>,
     pub log: Vec<Sample>,
+}
+
+/// A workload-defined metric: the distribution of its recorded values
+/// together with the orientation declared by the workload script
+/// (1 = higher is better, -1 = lower is better, 0 = undeclared).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CustomMetric {
+    pub distribution: ValueDistribution,
+    #[serde(default)]
+    pub orientation: i8,
 }
 
 /// Stores the statistics of one or two test runs.
@@ -419,6 +448,7 @@ pub struct Recorder<'a> {
     pub cycle_latency: LatencyDistributionRecorder,
     pub cycle_latency_by_fn: HashMap<String, LatencyDistributionRecorder>,
     pub request_latency: LatencyDistributionRecorder,
+    pub custom_metrics: HashMap<String, ValueDistributionRecorder>,
     pub concurrency_meter: TimeSeriesStats,
     log: Vec<Sample>,
     rate_limit: Option<f64>,
@@ -459,6 +489,7 @@ impl Recorder<'_> {
             cycle_latency: LatencyDistributionRecorder::default(),
             cycle_latency_by_fn: HashMap::new(),
             request_latency: LatencyDistributionRecorder::default(),
+            custom_metrics: HashMap::new(),
             throughput_meter: ThroughputMeter::default(),
             concurrency_meter: TimeSeriesStats::default(),
             keep_log,
@@ -479,6 +510,12 @@ impl Recorder<'_> {
         };
         for s in workload_stats.iter() {
             self.request_latency.add(&s.session_stats.resp_times_ns);
+            for (name, recorder) in &s.session_stats.custom_metrics {
+                self.custom_metrics
+                    .entry(name.clone())
+                    .or_default()
+                    .add(recorder);
+            }
             for fs in &s.function_stats {
                 self.cycle_latency.add(&fs.call_latency);
                 self.cycle_latency_by_fn
@@ -590,6 +627,17 @@ impl Recorder<'_> {
             } else {
                 None
             },
+            custom_metrics: self
+                .custom_metrics
+                .into_iter()
+                .map(|(k, v)| {
+                    let metric = CustomMetric {
+                        distribution: v.distribution_with_errors(),
+                        orientation: 0,
+                    };
+                    (k, metric)
+                })
+                .collect(),
             concurrency,
             concurrency_ratio,
             run_metadata,
@@ -632,6 +680,7 @@ mod test {
             cycle_latency: LatencyDistributionRecorder::default().distribution(),
             cycle_latency_by_fn: std::collections::HashMap::new(),
             request_latency: None,
+            custom_metrics: std::collections::HashMap::new(),
             concurrency: mean,
             concurrency_ratio: 100.0,
             run_metadata: std::collections::HashMap::new(),
@@ -655,13 +704,45 @@ mod test {
     }
 
     #[test]
-    fn benchmark_stats_without_run_metadata_still_loads() {
-        // Reports generated before the run_metadata field existed must keep loading.
+    fn benchmark_stats_from_older_latte_versions_still_loads() {
+        // Reports generated before the run_metadata and custom_metrics fields
+        // existed must keep loading.
         let json = serde_json::to_string(&sample_benchmark_stats()).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value.as_object_mut().unwrap().remove("run_metadata");
+        value.as_object_mut().unwrap().remove("custom_metrics");
         let parsed: super::BenchmarkStats = serde_json::from_value(value).unwrap();
         assert!(parsed.run_metadata.is_empty());
+        assert!(parsed.custom_metrics.is_empty());
+    }
+
+    #[test]
+    fn benchmark_stats_custom_metrics_roundtrip_through_json() {
+        let mut stats = sample_benchmark_stats();
+        let mut recorder = crate::stats::value::ValueDistributionRecorder::default();
+        recorder.record(crate::stats::value::MetricValue(0.9933));
+        stats.custom_metrics.insert(
+            "recall".to_string(),
+            super::CustomMetric {
+                distribution: recorder.distribution(),
+                orientation: 1,
+            },
+        );
+
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: super::BenchmarkStats = serde_json::from_str(&json).unwrap();
+        let recall = parsed.custom_metrics.get("recall").unwrap();
+        assert!((recall.distribution.mean.value - 0.9933).abs() < 0.001);
+        assert_eq!(recall.orientation, 1);
+
+        // Entries without an orientation (older reports) must default to neutral.
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["custom_metrics"]["recall"]
+            .as_object_mut()
+            .unwrap()
+            .remove("orientation");
+        let parsed: super::BenchmarkStats = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.custom_metrics.get("recall").unwrap().orientation, 0);
     }
 
     #[test]

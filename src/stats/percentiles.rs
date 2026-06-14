@@ -75,12 +75,12 @@ impl Percentiles {
 
     /// Computes distribution percentiles without errors.
     /// Fast.
-    pub fn compute(histogram: &Histogram<u64>, scale: f64) -> Percentiles {
+    pub fn compute<S: PercentileSource>(source: &S, scale: f64) -> Percentiles {
         let mut result = Vec::with_capacity(Percentile::COUNT);
         for p in Percentile::iter() {
             result.push(Mean {
                 n: Self::POPULATION_SIZE as u64,
-                value: histogram.value_at_percentile(p.value()) as f64 * scale,
+                value: source.value_at_percentile(p.value()) * scale,
                 std_err: None,
             });
         }
@@ -88,12 +88,12 @@ impl Percentiles {
         Percentiles(result.try_into().unwrap())
     }
 
-    /// Computes distribution percentiles with errors based on a HDR histogram.
+    /// Computes distribution percentiles with errors based on the distribution.
     /// Caution: this is slow. Don't use it when benchmark is running!
-    /// Errors are estimated by bootstrapping a larger population of histograms from the
-    /// distribution determined by the original histogram and computing the standard error.
-    pub fn compute_with_errors(
-        histogram: &Histogram<u64>,
+    /// Errors are estimated by bootstrapping a larger population from the
+    /// distribution and computing the standard error.
+    pub fn compute_with_errors<S: PercentileSource>(
+        source: &S,
         scale: f64,
         effective_sample_size: u64,
     ) -> Percentiles {
@@ -102,7 +102,7 @@ impl Percentiles {
         let mut samples: Vec<[f64; Percentile::COUNT]> = Vec::with_capacity(Self::POPULATION_SIZE);
         for _ in 0..Self::POPULATION_SIZE {
             samples.push(percentiles(
-                &bootstrap(&mut rng, histogram, effective_sample_size),
+                &source.bootstrap(&mut rng, effective_sample_size),
                 scale,
             ))
         }
@@ -116,7 +116,7 @@ impl Percentiles {
             let std_err = variance.sqrt();
             result.push(Mean {
                 n: Self::POPULATION_SIZE as u64,
-                value: histogram.value_at_percentile(p.value()) as f64 * scale,
+                value: source.value_at_percentile(p.value()) * scale,
                 std_err: Some(std_err),
             });
         }
@@ -130,6 +130,35 @@ impl Percentiles {
     }
 }
 
+/// A distribution that percentile statistics can be computed from.
+/// Implemented for a plain HDR histogram and for the signed two-store
+/// histogram, so one percentile engine serves both.
+pub trait PercentileSource: Sized {
+    /// Value at the given percentile, in histogram units (may be negative).
+    fn value_at_percentile(&self, percentile: f64) -> f64;
+
+    /// Resamples the distribution for bootstrap error estimation.
+    fn bootstrap(&self, rng: &mut SmallRng, effective_n: u64) -> Self;
+}
+
+impl PercentileSource for Histogram<u64> {
+    fn value_at_percentile(&self, percentile: f64) -> f64 {
+        Histogram::value_at_percentile(self, percentile) as f64
+    }
+
+    fn bootstrap(&self, rng: &mut SmallRng, effective_n: u64) -> Self {
+        bootstrap(rng, self, effective_n)
+    }
+}
+
+fn percentiles<S: PercentileSource>(source: &S, scale: f64) -> [f64; Percentile::COUNT] {
+    let mut percentiles = [0.0; Percentile::COUNT];
+    for (i, p) in Percentile::iter().enumerate() {
+        percentiles[i] = source.value_at_percentile(p.value()) * scale;
+    }
+    percentiles
+}
+
 /// Maximum chunk size used when bootstrapping histograms.
 ///
 /// The `rand` crate internally uses `i32` for some operations and will panic if asked
@@ -140,15 +169,27 @@ const MAX_BOOTSTRAP_CHUNK_SIZE: u64 = 2_000_000_000;
 
 /// Creates a new random histogram using another histogram as the distribution.
 fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -> Histogram<u64> {
-    let n = histogram.len();
-    if n <= 1 {
+    bootstrap_from_total(rng, histogram, histogram.len(), effective_n)
+}
+
+/// Creates a new random histogram using `histogram` as one part of a larger
+/// distribution holding `total_n` values overall. Bucket probabilities are
+/// computed against `total_n`, so the two stores of a signed distribution
+/// can be resampled consistently with each other.
+pub(crate) fn bootstrap_from_total(
+    rng: &mut impl Rng,
+    histogram: &Histogram<u64>,
+    total_n: u64,
+    effective_n: u64,
+) -> Histogram<u64> {
+    if total_n <= 1 {
         return histogram.clone();
     }
     let mut result =
         Histogram::new_with_bounds(histogram.low(), histogram.high(), histogram.sigfig()).unwrap();
 
     for bucket in histogram.iter_recorded() {
-        let p = bucket.count_at_value() as f64 / n as f64;
+        let p = bucket.count_at_value() as f64 / total_n as f64;
         assert!(p > 0.0, "Probability must be greater than 0.0");
         // NOTE: 'rand' lib panics if n > i32::MAX, so, use chunks smaller than that value
         //       see https://github.com/scylladb/latte/issues/115
@@ -169,14 +210,6 @@ fn bootstrap(rng: &mut impl Rng, histogram: &Histogram<u64>, effective_n: u64) -
             .unwrap()
     }
     result
-}
-
-fn percentiles(hist: &Histogram<u64>, scale: f64) -> [f64; Percentile::COUNT] {
-    let mut percentiles = [0.0; Percentile::COUNT];
-    for (i, p) in Percentile::iter().enumerate() {
-        percentiles[i] = hist.value_at_percentile(p.value()) as f64 * scale;
-    }
-    percentiles
 }
 
 #[cfg(test)]
