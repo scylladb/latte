@@ -1,5 +1,6 @@
 use crate::config::PRINT_RETRY_ERROR_LIMIT;
 use crate::stats::latency::LatencyDistributionRecorder;
+use crate::stats::value::MetricValue;
 use crate::stats::value::ValueDistributionRecorder;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -38,6 +39,19 @@ impl SessionStats {
         self.resp_times_ns.record(duration);
         self.req_count += 1;
         self.row_count += row_count;
+    }
+
+    pub fn record_metric(&mut self, name: &str, value: f64) {
+        // Called every cycle: avoid allocating the key on the hot path when the
+        // metric already exists.
+        if let Some(recorder) = self.custom_metrics.get_mut(name) {
+            recorder.record(MetricValue(value));
+        } else {
+            self.custom_metrics
+                .entry(name.to_string())
+                .or_default()
+                .record(MetricValue(value));
+        }
     }
 
     pub fn store_retry_error(&mut self, error_str: String) {

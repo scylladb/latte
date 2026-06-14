@@ -330,3 +330,28 @@ pub fn elapsed_secs(ctx: &Context) -> f64 {
 pub fn set_report_field(ctx: &Context, key: Ref<str>, value: Ref<str>) {
     ctx.set_report_field(&key, &value);
 }
+
+#[rune::function(instance)]
+pub fn record_metric(ctx: &Context, name: Ref<str>, value: f64) -> VmResult<()> {
+    if !value.is_finite() {
+        return VmResult::panic(format!(
+            "record_metric: value for metric \"{}\" must be a finite number, got {value}",
+            &*name
+        ));
+    }
+    ctx.record_metric(&name, value);
+    VmResult::Ok(())
+}
+
+#[rune::function(instance)]
+pub fn declare_metric(ctx: &Context, name: Ref<str>, orientation: Ref<str>) -> VmResult<()> {
+    let orientation = vm_try!(match &*orientation {
+        "higher" => Ok(1),
+        "lower" => Ok(-1),
+        other => Err(VmError::panic(format!(
+            "declare_metric: orientation must be \"higher\" or \"lower\", got \"{other}\""
+        ))),
+    });
+    ctx.declare_metric(&name, orientation);
+    VmResult::Ok(())
+}

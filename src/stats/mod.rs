@@ -570,7 +570,11 @@ impl Recorder<'_> {
     }
 
     /// Stops the recording, computes the statistics and returns them as the new object.
-    pub fn finish(mut self, run_metadata: HashMap<String, String>) -> BenchmarkStats {
+    pub fn finish(
+        mut self,
+        run_metadata: HashMap<String, String>,
+        metric_orientations: HashMap<String, i8>,
+    ) -> BenchmarkStats {
         self.end_time = SystemTime::now();
         self.end_instant = Instant::now();
         self.end_cpu_time = ProcessTime::now();
@@ -631,9 +635,10 @@ impl Recorder<'_> {
                 .custom_metrics
                 .into_iter()
                 .map(|(k, v)| {
+                    let orientation = metric_orientations.get(&k).copied().unwrap_or(0);
                     let metric = CustomMetric {
                         distribution: v.distribution_with_errors(),
-                        orientation: 0,
+                        orientation,
                     };
                     (k, metric)
                 })
