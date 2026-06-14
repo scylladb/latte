@@ -14,6 +14,18 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Debug)]
 pub struct SerializableHistogram(pub Histogram<u64>);
 
+impl SerializableHistogram {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Default for SerializableHistogram {
+    fn default() -> Self {
+        SerializableHistogram(Histogram::new(3).unwrap())
+    }
+}
+
 impl Serialize for SerializableHistogram {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

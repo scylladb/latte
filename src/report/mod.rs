@@ -802,6 +802,41 @@ impl Display for BenchmarkCmp<'_> {
             }
         }
 
+        let metric_names = self
+            .v1
+            .custom_metrics
+            .keys()
+            .chain(self.v2.iter().flat_map(|v2| v2.custom_metrics.keys()))
+            .sorted()
+            .dedup();
+        for name in metric_names {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "{}",
+                fmt_section_header(format!("CUSTOM METRIC {name} ").as_str())
+            )?;
+            if self.v2.is_some() {
+                writeln!(f, "{}", fmt_cmp_header(true))?;
+            }
+
+            let l = self.line("Mean", "", |s| {
+                Quantity::from(s.custom_metrics.get(name).map(|m| m.distribution.mean))
+                    .with_precision(4)
+            });
+            writeln!(f, "{l}")?;
+            for p in resp_time_percentiles.iter() {
+                let l = self.line(p.name(), "", |s| {
+                    let v = s
+                        .custom_metrics
+                        .get(name)
+                        .map(|m| m.distribution.percentiles.get(*p));
+                    Quantity::from(v).with_precision(4)
+                });
+                writeln!(f, "{l}")?;
+            }
+        }
+
         if self.v1.error_count > 0 {
             writeln!(f)?;
             writeln!(f, "{}", fmt_section_header("ERRORS"))?;

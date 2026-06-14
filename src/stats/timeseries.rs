@@ -235,6 +235,25 @@ mod test {
         assert_le!(estimator.effective_sample_size(), N);
     }
 
+    /// The effective sample size is built from ratios of variances, so it must
+    /// not depend on the unit the values are expressed in.
+    #[test]
+    fn test_ess_scale_invariant() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let mut raw = TimeSeriesStats::default();
+        let mut scaled = TimeSeriesStats::default();
+        for _ in 0..200 {
+            let v = rng.random::<f64>();
+            for _ in 0..16 {
+                raw.record(v, 1.0);
+                scaled.record(v * 1e9, 1.0);
+            }
+        }
+        let ess_raw = raw.effective_sample_size() as f64;
+        let ess_scaled = scaled.effective_sample_size() as f64;
+        assert_approx_eq!(ess_raw, ess_scaled, ess_raw * 0.01 + 1.0);
+    }
+
     #[rstest]
     #[case(100, 2)]
     #[case(100, 4)]
