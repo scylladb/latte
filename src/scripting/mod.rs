@@ -137,6 +137,8 @@ fn init_context_module() -> Result<Module, ContextError> {
     context_module.function_meta(functions_common::signal_failure)?;
     context_module.function_meta(functions_common::elapsed_secs)?;
     context_module.function_meta(functions_common::set_report_field)?;
+    context_module.function_meta(functions_common::record_metric)?;
+    context_module.function_meta(functions_common::declare_metric)?;
 
     context_module.function_meta(row_distribution::init_partition_row_distribution_preset)?;
     context_module.function_meta(row_distribution::get_partition_idx)?;

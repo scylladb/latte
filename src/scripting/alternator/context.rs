@@ -18,6 +18,7 @@ pub struct Context {
     page_size: u64,
     pub stats: Arc<TryLock<SessionStats>>,
     pub report_metadata: Arc<TryLock<HashMap<String, String>>>,
+    pub metric_orientations: Arc<TryLock<HashMap<String, i8>>>,
     pub start_time: TryLock<Instant>,
     pub retry_number: u64,
     pub retry_interval: RetryInterval,
@@ -45,6 +46,7 @@ impl Context {
             page_size,
             stats: Arc::new(TryLock::new(SessionStats::new())),
             report_metadata: Arc::new(TryLock::new(HashMap::new())),
+            metric_orientations: Arc::new(TryLock::new(HashMap::new())),
             start_time: TryLock::new(Instant::now()),
             retry_number,
             retry_interval,
@@ -64,6 +66,9 @@ impl Context {
             stats: Arc::new(TryLock::new(SessionStats::default())),
             report_metadata: Arc::new(TryLock::new(
                 self.report_metadata.try_lock().unwrap().clone(),
+            )),
+            metric_orientations: Arc::new(TryLock::new(
+                self.metric_orientations.try_lock().unwrap().clone(),
             )),
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             retry_number: self.retry_number,
@@ -85,6 +90,7 @@ impl Context {
             page_size: self.page_size,
             stats: Arc::clone(&self.stats),
             report_metadata: Arc::clone(&self.report_metadata),
+            metric_orientations: Arc::clone(&self.metric_orientations),
             start_time: TryLock::new(*self.start_time.try_lock().unwrap()),
             retry_number: self.retry_number,
             retry_interval: self.retry_interval,
@@ -158,6 +164,21 @@ impl Context {
 
     pub fn report_metadata_snapshot(&self) -> HashMap<String, String> {
         self.report_metadata.try_lock().unwrap().clone()
+    }
+
+    pub fn record_metric(&self, name: &str, value: f64) {
+        self.stats.try_lock().unwrap().record_metric(name, value);
+    }
+
+    pub fn declare_metric(&self, name: &str, orientation: i8) {
+        self.metric_orientations
+            .try_lock()
+            .unwrap()
+            .insert(name.to_string(), orientation);
+    }
+
+    pub fn metric_orientations_snapshot(&self) -> HashMap<String, i8> {
+        self.metric_orientations.try_lock().unwrap().clone()
     }
 
     pub fn take_session_stats(&self) -> SessionStats {
