@@ -75,7 +75,7 @@ jobs:
     needs: [get_tag, release]
     strategy:
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
         variant:
           - name: latte
             args: --release
