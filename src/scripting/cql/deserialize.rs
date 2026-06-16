@@ -9,14 +9,15 @@ use rune::runtime::{Object, OwnedTuple, Vec as RuneVec};
 use rune::Value;
 use scylla::cluster::metadata::{CollectionType, ColumnType, NativeType};
 use scylla::deserialize::row::{ColumnIterator, DeserializeRow};
-use scylla::deserialize::value::{DeserializeValue, ListlikeIterator, MapIterator, UdtIterator};
+use scylla::deserialize::value::{
+    DeserializeValue, ListlikeIterator, MapIterator, UdtIterator, VectorIterator,
+};
 use scylla::deserialize::{DeserializationError, TypeCheckError};
 use scylla::frame::response::result::ColumnSpec;
 use scylla::value::{
     Counter, CqlDate, CqlDecimalBorrowed, CqlDuration, CqlTime, CqlTimestamp, CqlTimeuuid,
     CqlVarintBorrowed,
 };
-use scylla_cql::deserialize::value::VectorIterator;
 use uuid::Uuid;
 
 /// A value deserialized directly into a rune `Value`, bypassing the intermediate
