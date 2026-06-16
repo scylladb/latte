@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "latte-cli"
-version = "0.48.0-scylladb"
+version = "0.49.0-scylladb"
 dependencies = [
  "anyhow",
  "assert_approx_eq",
