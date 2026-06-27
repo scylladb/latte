@@ -25,9 +25,10 @@ today must be added first (§3); the rest reuses existing machinery.
 | Bounded validated subset | scripts already gate on `latte::hash*` keys — sample on partition idx |
 | Per-partition identity & expected size | `get_partition_info` already yields a stable `idx` (0..total_partitions) and `rows_num` |
 
-The oracle engine itself ships as a **separate, driver-agnostic crate** (pure LWW/liveness over
-`ck:u64` + `crc16:u16` — direct port of the pseudocode). Latte adds thin glue: the partition
-store, a checksum codec, and the Rune methods.
+The oracle **engine** ships as a separate crate (pure LWW/liveness over `ck:u64` + `crc16:u16` —
+direct port of the pseudocode); the engine is API-agnostic, but **this design targets the CQL API
+only**. Latte adds thin glue: the partition store, a checksum codec, and the Rune methods. Support
+for the DynamoDB/Alternator API is future work — see §6.
 
 ---
 
@@ -217,8 +218,27 @@ partitions; it does **not** cap a single partition's growth. So a hard memory li
 - **Eviction loses that partition's validation** — and should not be created again.
 - A partition is dropped (and its bytes reclaimed) when it becomes untrustworthy: `save` raises
   **`OracleError`** (now only an equal-microsecond same-cell conflict), or `validate` reports
-  **`ck_collision`** (two SUT rows share one CRC-64 ck — vanishingly rare, see §6). Workload
-  continues.
+  **`ck_collision`** (two SUT rows share one CRC-64 ck — vanishingly rare, see
+  `oracle_design.md` § *Collision probability*). Workload continues.
 
 Note the budget should be sized for the *mutation volume on the sampled partitions over the run
 length*, not just `partitions × rows`.
+
+---
+
+## 6. DynamoDB / Alternator applicability (out of scope for now)
+
+This design targets the **CQL API only**. The oracle *engine* (mutation log, LWW replay,
+liveness verdict, checksum compare) is API-agnostic; the CQL coupling is confined to four
+swappable adapters. Supporting Alternator means re-implementing these, not redesigning the
+engine — deferred as future work:
+
+| Adapter | CQL today | Alternator later |
+|---|---|---|
+| **Serialization codec** | CRC over canonical CQL wire bytes | CRC over canonical AttributeValue JSON. Engine only needs `crc(written) == crc(read-back)`; it never inspects bytes. |
+| **Write ordering** | client `USING TIMESTAMP` (exact LWW key) | Alternator has no client timestamp and no read-back. Order by a logical sequence from `save()` under `always_use_lwt` + the single-writer-per-partition rule, or simply avoid re-mutating a row within a short window so server wall-clock timestamps stay unambiguous. |
+| **Liveness rules** | row marker: `INSERT` marks, `UPDATE` doesn't | simpler — `PutItem` replaces, `UpdateItem` upserts, `DeleteItem` removes. Validate observable liveness (what Query/GetItem returns); internal markers don't matter. |
+| **TTL model** | cell-level, coordinator-clock + TTL | opt-out (no TTL → grace machinery inert), or item-level with a client-written absolute expiry and grace ≥ the Alternator reclamation period (default 24h). |
+
+Only write ordering is real work, and it rides on the single-writer constraint the design
+already mandates.
