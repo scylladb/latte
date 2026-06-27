@@ -16,6 +16,11 @@ using little enough memory to run alongside a high-throughput workload without a
 database. It does **not** attempt to validate the entire dataset — see *Scope & detection
 model* — only a bounded, pre-selected subset of partitions.
 
+**API scope: CQL only.** The engine (mutation log, LWW replay, liveness, checksum compare) is
+API-agnostic, but the semantics modelled below — cell timestamps, row markers, cell-level TTL,
+canonical CQL serialization — are CQL's. DynamoDB/Alternator support is future work; see
+`latte_with_oracle.md` § *DynamoDB / Alternator applicability* for the adapter-level deltas.
+
 The library is consumed by a stress tool (Latte, a Rust-based load generator with Rune
 scripting, is the primary target). This document gives reference pseudocode in Python; the
 production implementation is Rust. **The pseudocode expresses the API and the intended
