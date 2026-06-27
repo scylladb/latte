@@ -7,9 +7,9 @@ stress workload. It must:
 
 1. Support the full mutation surface: `INSERT`, `UPDATE`, and `DELETE`.
 2. Keep an authoritative model ("oracle") of the expected data **entirely in memory**.
-3. Detect **resurrection**: after a partition (or row) is deleted, verify that the data
-   does not silently reappear (tombstone resurrection, broken repair, a node returning
-   from a long outage, etc.).
+3. Detect **resurrection** in the validated subset: after a key is deleted, flag data that
+   silently reappears (tombstone resurrection, broken repair, a node returning from a long
+   outage). Detection is probabilistic and aimed at bulk faults — see *Scope & detection model*.
 
 Validation must be strong enough to catch value corruption *and* missing/extra rows, while
 using little enough memory to run alongside a high-throughput workload without an auxiliary
@@ -79,8 +79,10 @@ fraction `f` of the data and we validate `s` partitions, the chance we miss it e
 tombstone that resurrects exactly one row after `gc_grace` — has `f ≈ 1/total_partitions`, so
 `P(detect) ≈ s/total`, usually tiny. The sampling argument therefore targets **bulk** loss
 and resurrection; isolated resurrection of an unsampled row is not guaranteed to be caught.
-This is acceptable because the disruptions this tool exercises produce bulk damage, but it
-should not be sold as "detects any resurrection."
+This is a **calculated risk**: most disruptions this tool exercises produce bulk damage, which a
+sample catches with high probability — but narrow faults are a blind spot. A nemesis that clears a
+single sstable, or a corruption bug whose blast radius we can't assume, may touch too little data to
+intersect the sample. Partial coverage beats none, with that gap understood.
 
 Coverage also depends on rates: with a low delete/update rate and modest throughput the
 budget may comfortably hold **every** touched partition, giving full coverage; coverage only
@@ -864,7 +866,8 @@ in memory.
    every per-row check: `value_mismatch`, `resurrected`, and `unexpected_row` (a ck the
    oracle never recorded — always an error, on any read) all fire regardless of `complete`.
 2. **Dropped oracles are not validated.** By design only a subset is validated; budget
-   pressure or collisions shrink it further. Acceptable because corruption is broad.
+   pressure or collisions shrink it further. A calculated risk — bulk corruption is caught with
+   high probability, narrow faults can slip through (see *Scope & detection model*).
 3. **TTL expiry is approximate** (TTL is `u16`, ≤ 18.2 h). The oracle expires cells against
    the record timestamp + TTL, not against each replica's wall clock, so a `ttl_grace_secs`
    window absorbs that clock difference (and Scylla's 1 s rounding); a cell inside the window
