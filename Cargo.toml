@@ -71,7 +71,7 @@ uuid = { version = "1.1", features = ["v4"] }
 walkdir = "2"
 aws-sdk-dynamodb = { version = "1.111.0", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
 aws-config = { version = "1.8.16", optional = true }
-alternator-driver = { git = "https://github.com/scylladb/alternator-client-rust", rev = "0cf69a49232957d90a7c75c4ee101c37096f0b0a", optional = true }
+alternator-driver = { git = "https://github.com/scylladb/alternator-client-rust", rev = "014688feabecc70b72cef0b18f13a4677d092227", optional = true }
 
 [build-dependencies]
 reqwest = { version = "0.13", features = ["json", "blocking"] }
