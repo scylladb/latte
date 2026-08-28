@@ -50,3 +50,33 @@ pub async fn handle_retry_error(ctxt: &Context, current_attempt_num: u64, curren
         eprintln!("{err_msg}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interval_grows_with_attempts_and_is_capped_by_max() {
+        let min = Duration::from_millis(100);
+        let max = Duration::from_secs(5);
+        let first = get_exponential_retry_interval(min, max, 1);
+        assert!(first >= Duration::from_millis(150) && first < Duration::from_millis(250));
+        assert!(get_exponential_retry_interval(min, max, 10) <= max);
+    }
+
+    #[test]
+    fn large_attempt_numbers_do_not_overflow() {
+        let min = Duration::from_millis(100);
+        let max = Duration::from_secs(5);
+        // Attempt 64 used to wrap the power to 0, making the jittered interval
+        // negative and panicking Duration::from_secs_f64.
+        for attempt in [63, 64, 65, 1_000, u64::MAX] {
+            let interval = get_exponential_retry_interval(min, max, attempt);
+            assert!(interval <= max, "attempt {attempt}: {interval:?} > max");
+            assert!(
+                interval >= max - min / 2,
+                "attempt {attempt}: {interval:?} lost the exponential cap"
+            );
+        }
+    }
+}
