@@ -24,7 +24,7 @@ const WRITE = "write";
 pub async fn init_schema(db) {
     db.execute(`
         CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
-            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1 }`).await?;
+            WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }`).await?;
     db.execute(`
         DROP TABLE IF EXISTS ${KEYSPACE}.${TABLE}`).await?;
     db.execute(`
