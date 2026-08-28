@@ -7,7 +7,7 @@ const TABLE = "blob";
 
 pub async fn schema(db) {
     db.execute(`CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE} \
-                    WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 }`).await?;
+                    WITH REPLICATION = { 'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1 }`).await?;
     db.execute(`DROP TABLE IF EXISTS ${KEYSPACE}.${TABLE}`).await?;
     db.execute(`CREATE TABLE ${KEYSPACE}.${TABLE}(id bigint PRIMARY KEY, data BLOB)`).await?;
 }

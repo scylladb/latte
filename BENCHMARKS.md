@@ -20,7 +20,7 @@ Insert 10 million rows to an empty single-column table in Cassandra 4.0.1.
 
 Schema:
 ```
-CREATE KEYSPACE latte WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
+CREATE KEYSPACE latte WITH REPLICATION = { 'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1 };
 CREATE TABLE latte.basic(id bigint PRIMARY KEY);
 ```
 
