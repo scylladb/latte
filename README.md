@@ -4,6 +4,7 @@
 |---|---|
 | **CQL** (Cassandra / ScyllaDB) | You're in the right place — keep reading |
 | **DynamoDB / Alternator** | **[See ALTERNATOR.md](ALTERNATOR.md)** — full docs for `latte-alternator` |
+| **Multi-row partitions of different sizes** | **[See PARTITION_PRESETS.md](PARTITION_PRESETS.md)** — partition row distribution presets and single-partition batches |
 
 **Runs custom CQL workloads against a Cassandra cluster and measures throughput and response times**
 
@@ -574,6 +575,11 @@ Then, in the target functions we can reuse it like following:
 As a result we will be able to get multi-row partitions in a requested size proportions.
 
 Number of presets is unlimited. Any rune script may use multiple different presets for different tables.
+
+Presets can also be used to write `LOGGED` batches which never span more than one partition,
+letting the DB skip the batchlog. See the
+**[partition row distribution presets](PARTITION_PRESETS.md)** document for the full description
+of the feature, the batching API and runnable examples based on the existing workload scripts.
 
 ### Validating number of rows for SELECT queries
 
