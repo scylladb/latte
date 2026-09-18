@@ -145,6 +145,9 @@ fn init_context_module() -> Result<Module, ContextError> {
     context_module.function_meta(row_distribution::get_partition_idx)?;
     context_module.ty::<row_distribution::Partition>()?;
     context_module.function_meta(row_distribution::get_partition_info)?;
+    context_module.function_meta(row_distribution::set_partition_batch_size)?;
+    context_module.ty::<row_distribution::PartitionBatch>()?;
+    context_module.function_meta(row_distribution::get_partition_batch)?;
 
     Ok(context_module)
 }
