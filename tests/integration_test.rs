@@ -487,3 +487,58 @@ async fn test_rune_return_in_diverging_branches() {
     assert_latte_success(&read_result);
     assert_has_throughput_metrics(&read_result);
 }
+
+/// Covers the rows number validation of the 'execute_prepared_with_validation'
+/// and 'execute_with_validation' context functions against multi-row partitions
+/// of different sizes. Its 'get_many' and 'count' functions pass the unsigned
+/// 'partition.rows_num' value as a validation argument, which used to be
+/// rejected by the validation arguments parser.
+#[tokio::test]
+#[ignore]
+async fn test_latte_cql_row_count_validation_workload() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("row_count_validation.rn");
+    let duration = "1000";
+
+    // 100 partitions of 4 rows and 100 partitions of 6 rows
+    #[rustfmt::skip]
+    let mut args: Vec<&str> = vec![
+        "-P", "row_count=1000",
+        "-P", "rows_per_partition=1",
+        "-P", "partition_sizes=\"50:4,50:6\"",
+    ];
+    if db._container.is_some() {
+        args.extend(["-P", "replication_factor=1"]); // Running in a single container
+    }
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    latte.schema(&db, &workload, &args);
+
+    println!("\n[TEST-INFO] Phase 2: Data population");
+    let mut populate_args = args.clone();
+    populate_args.push("-f=insert");
+    let populate_result = latte.run(&db, &workload, duration, &populate_args);
+    assert_latte_success(&populate_result);
+    assert_no_errors(&populate_result);
+    assert_has_throughput_metrics(&populate_result);
+
+    // Both statement kinds go through the same validation arguments parser.
+    for use_prepared_statements in ["true", "false"] {
+        for function in ["get", "get_many", "count"] {
+            println!(
+                "\n[TEST-INFO] Phase 3: Data validation using '{function}' \
+                 (use_prepared_statements={use_prepared_statements})"
+            );
+            let mut validation_args = args.clone();
+            let function_arg = format!("-f={function}");
+            let prepared_arg = format!("use_prepared_statements={use_prepared_statements}");
+            validation_args.push(&function_arg);
+            validation_args.extend(["-P", &prepared_arg]);
+            let validation_result = latte.run(&db, &workload, duration, &validation_args);
+            assert_latte_success(&validation_result);
+            assert_no_errors(&validation_result);
+        }
+    }
+}
