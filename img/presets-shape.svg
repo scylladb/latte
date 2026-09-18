@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 400" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="The preset turns a percent to multiplier mapping into partitions of 10, 25 and 35 rows, plus one leftover partition that carries the rows the requested groups could not fit.">
+<style>.bgcard{fill:#f6f8fa;stroke:#d0d7de}.card{fill:#ffffff;stroke:#d0d7de}.b-blue{fill:#ddf4ff;stroke:#0969da}.b-red{fill:#ffebe9;stroke:#cf222e}.b-green{fill:#dafbe3;stroke:#1a7f37}.b-purple{fill:#fbefff;stroke:#8250df}.t-ink{fill:#1f2328}.t-muted{fill:#656d76}.t-blue{fill:#0969da}.t-red{fill:#cf222e}.t-green{fill:#1a7f37}.t-purple{fill:#8250df}.l-muted{stroke:#656d76}.l-green{stroke:#1a7f37}.l-red{stroke:#cf222e}.l-border{stroke:#d0d7de}.m-muted{fill:#656d76}.m-green{fill:#1a7f37}.m-red{fill:#cf222e}
+@media (prefers-color-scheme:dark){.bgcard{fill:#0d1117;stroke:#30363d}.card{fill:#161b22;stroke:#30363d}.b-blue{fill:#121d2f;stroke:#58a6ff}.b-red{fill:#25171c;stroke:#f85149}.b-green{fill:#12261e;stroke:#3fb950}.b-purple{fill:#1d1b2e;stroke:#bc8cff}.t-ink{fill:#e6edf3}.t-muted{fill:#8b949e}.t-blue{fill:#58a6ff}.t-red{fill:#f85149}.t-green{fill:#3fb950}.t-purple{fill:#bc8cff}.l-muted{stroke:#8b949e}.l-green{stroke:#3fb950}.l-red{stroke:#f85149}.l-border{stroke:#30363d}.m-muted{fill:#8b949e}.m-green{fill:#3fb950}.m-red{fill:#f85149}}</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-muted"/></marker><marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-green"/></marker><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-red"/></marker></defs>
+<rect class="bgcard" x="0.5" y="0.5" width="979" height="399" rx="8"/>
+<text class="t-ink" x="28" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="16" text-anchor="start" font-weight="600">What a preset describes</text>
+<text class="t-blue" x="28" y="60" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" text-anchor="start" font-weight="normal">init_partition_row_distribution_preset("main", 10000, 10, "70:1,20:2.5,10:3.5")</text>
+<path class="l-border" d="M28 74 L952 74" fill="none" stroke-width="1"/>
+<text class="t-muted" x="28" y="96" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" text-anchor="start" font-weight="normal">REQUESTED</text>
+<text class="t-muted" x="322" y="96" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" text-anchor="start" font-weight="normal">ROWS OF ONE SUCH PARTITION</text>
+<text class="t-muted" x="820" y="96" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" text-anchor="start" font-weight="normal">PARTITIONS</text>
+<text class="t-ink" x="28" y="130" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" text-anchor="start" font-weight="normal">70% of the partitions</text>
+<text class="t-muted" x="28" y="148" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="start" font-weight="normal">multiplier 1  -&gt;  10 * 1 = 10 rows</text>
+<rect class="b-blue" x="322" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="331" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="340" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="349" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="358" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="367" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="376" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="385" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="394" y="120" width="7" height="24" rx="2"/>
+<rect class="b-blue" x="403" y="120" width="7" height="24" rx="2"/>
+<text class="t-blue" x="820" y="137" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" text-anchor="start" font-weight="600">453</text>
+<text class="t-muted" x="866" y="137" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" text-anchor="start" font-weight="normal">x 10 rows</text>
+<text class="t-ink" x="28" y="192" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" text-anchor="start" font-weight="normal">20% of the partitions</text>
+<text class="t-muted" x="28" y="210" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="start" font-weight="normal">multiplier 2.5  -&gt;  10 * 2.5 = 25 rows</text>
+<rect class="b-purple" x="322" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="331" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="340" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="349" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="358" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="367" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="376" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="385" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="394" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="403" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="412" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="421" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="430" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="439" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="448" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="457" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="466" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="475" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="484" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="493" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="502" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="511" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="520" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="529" y="182" width="7" height="24" rx="2"/>
+<rect class="b-purple" x="538" y="182" width="7" height="24" rx="2"/>
+<text class="t-purple" x="820" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" text-anchor="start" font-weight="600">129</text>
+<text class="t-muted" x="866" y="199" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" text-anchor="start" font-weight="normal">x 25 rows</text>
+<text class="t-ink" x="28" y="254" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" text-anchor="start" font-weight="normal">10% of the partitions</text>
+<text class="t-muted" x="28" y="272" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="start" font-weight="normal">multiplier 3.5  -&gt;  10 * 3.5 = 35 rows</text>
+<rect class="b-green" x="322" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="331" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="340" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="349" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="358" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="367" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="376" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="385" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="394" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="403" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="412" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="421" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="430" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="439" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="448" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="457" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="466" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="475" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="484" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="493" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="502" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="511" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="520" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="529" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="538" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="547" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="556" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="565" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="574" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="583" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="592" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="601" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="610" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="619" y="244" width="7" height="24" rx="2"/>
+<rect class="b-green" x="628" y="244" width="7" height="24" rx="2"/>
+<text class="t-green" x="820" y="261" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" text-anchor="start" font-weight="600">64</text>
+<text class="t-muted" x="866" y="261" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" text-anchor="start" font-weight="normal">x 35 rows</text>
+<path class="l-border" d="M28 300 L952 300" fill="none" stroke-width="1" stroke-dasharray="4 4"/>
+<text class="t-muted" x="28" y="326" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" text-anchor="start" font-weight="normal">leftover partition</text>
+<text class="t-muted" x="28" y="344" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="start" font-weight="normal">the rows the 3 groups above could not fit</text>
+<rect class="card" x="322" y="318" width="7" height="24" rx="2"/>
+<rect class="card" x="331" y="318" width="7" height="24" rx="2"/>
+<rect class="card" x="340" y="318" width="7" height="24" rx="2"/>
+<rect class="card" x="349" y="318" width="7" height="24" rx="2"/>
+<rect class="card" x="358" y="318" width="7" height="24" rx="2"/>
+<text class="t-muted" x="820" y="335" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" text-anchor="start" font-weight="600">1</text>
+<text class="t-muted" x="866" y="335" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" text-anchor="start" font-weight="normal">x 5 rows</text>
+<path class="l-border" d="M28 362 L952 362" fill="none" stroke-width="1"/>
+<text class="t-muted" x="28" y="384" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" text-anchor="start" font-weight="normal">453*10 + 129*25 + 64*35 + 1*5  =  10000 rows in 647 partitions</text>
+</svg>

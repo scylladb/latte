@@ -4,3 +4,5 @@
 
 # Linux swap files range from .saa to .swp (used by vim and some other apps)
 *.s[a-w][a-p]
+# NOTE: the pattern above also matches '.svg', so allow those back
+!*.svg
