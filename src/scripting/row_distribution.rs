@@ -1,5 +1,6 @@
 use rune::runtime::Ref;
 use rune::Any;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::context::Context;
@@ -63,6 +64,9 @@ pub struct RowDistributionPreset {
     /// Number of batches needed to cover the whole data set exactly once.
     /// Valid only when 'batch_size' is not '0'.
     pub total_batches: u64,
+    /// Number of batches of every partition group, in the group order.
+    /// Valid only when 'batch_size' is not '0'.
+    pub group_batches: Vec<u64>,
 }
 
 impl RowDistributionPreset {
@@ -74,6 +78,7 @@ impl RowDistributionPreset {
             row_distributions: vec![],
             batch_size: 0,
             total_batches: 0,
+            group_batches: vec![],
         }
     }
 
@@ -98,10 +103,146 @@ impl RowDistributionPreset {
             .sum()
     }
 
-    /// Stores the batch size and caches the derived number of batches.
+    /// Stores the batch size and the derived per group batch counts.
     pub fn set_batch_size(&mut self, batch_size: u64) {
+        self.group_batches = self
+            .partition_groups
+            .iter()
+            .map(|pg| pg.n_partitions * pg.n_rows_per_partition.div_ceil(batch_size))
+            .collect();
         self.batch_size = batch_size;
-        self.total_batches = self.count_batches(batch_size);
+        self.total_batches = self.group_batches.iter().sum();
+    }
+
+    /// Number of partitions of all the groups preceding the given one.
+    fn partn_offset(&self, group_idx: usize) -> u64 {
+        self.partition_groups[..group_idx]
+            .iter()
+            .map(|pg| pg.n_partitions)
+            .sum()
+    }
+
+    /// Compares the Webster quotients '2*n/(2*c+1)' of 2 groups using integers
+    /// only. An exact tie is broken by the group index, the smaller one wins.
+    ///
+    /// NOTE: ties do happen and the tie break must be the same everywhere.
+    ///       2 different tie breaks make 2 equally valid apportionments of the
+    ///       neighbouring stress iteration indexes, which lets a group reuse a
+    ///       position and write the same rows twice.
+    fn quotient_cmp(
+        (n_a, c_a, idx_a): (u64, u64, usize),
+        (n_b, c_b, idx_b): (u64, u64, usize),
+    ) -> Ordering {
+        let left = (n_a as u128) * (2 * c_b as u128 + 1);
+        let right = (n_b as u128) * (2 * c_a as u128 + 1);
+        match left.cmp(&right) {
+            Ordering::Equal => idx_b.cmp(&idx_a),
+            other => other,
+        }
+    }
+
+    /// Index of the group whose pending batch has the biggest quotient, which is
+    /// the group the next stress iteration index belongs to.
+    fn biggest_pending_quotient(&self, counts: &[u64]) -> usize {
+        let mut best = 0;
+        for group_idx in 1..self.group_batches.len() {
+            if Self::quotient_cmp(
+                (self.group_batches[group_idx], counts[group_idx], group_idx),
+                (self.group_batches[best], counts[best], best),
+            ) == Ordering::Greater
+            {
+                best = group_idx;
+            }
+        }
+        best
+    }
+
+    /// Index of the group whose last handed out batch has the smallest quotient.
+    fn smallest_handed_out_quotient(&self, counts: &[u64]) -> Option<usize> {
+        let mut worst: Option<usize> = None;
+        for group_idx in 0..self.group_batches.len() {
+            if counts[group_idx] == 0 {
+                continue;
+            }
+            worst = match worst {
+                None => Some(group_idx),
+                Some(current) => {
+                    if Self::quotient_cmp(
+                        (
+                            self.group_batches[group_idx],
+                            counts[group_idx] - 1,
+                            group_idx,
+                        ),
+                        (self.group_batches[current], counts[current] - 1, current),
+                    ) == Ordering::Less
+                    {
+                        Some(group_idx)
+                    } else {
+                        Some(current)
+                    }
+                }
+            };
+        }
+        worst
+    }
+
+    /// How many batches every partition group has among the first 'n' ones.
+    ///
+    /// This is the Webster (Sainte-Lague) divisor apportionment of 'n' items to
+    /// the groups, which keeps every group within a single item of its exact
+    /// share for **any** 'n', and hands out exactly 'group_batches' items at a
+    /// full pass. A divisor method is needed rather than the simpler largest
+    /// remainder one, because only a divisor method is house monotone: growing
+    /// 'n' by 1 always adds a batch to exactly one group and never takes one
+    /// away from another.
+    fn group_counts_at(&self, n: u64) -> Vec<u64> {
+        let groups_num = self.group_batches.len();
+        if n == 0 {
+            return vec![0; groups_num];
+        }
+        // A divisor of 'total_batches / n' is within half an item per group of
+        // the wanted house size, so the greedy fix up below takes a few steps.
+        let divisor = self.total_batches as f64 / n as f64;
+        let mut counts: Vec<u64> = self
+            .group_batches
+            .iter()
+            .map(|batches| (*batches as f64 / divisor + 0.5).floor() as u64)
+            .collect();
+        let mut done: u64 = counts.iter().sum();
+        while done < n {
+            let best = self.biggest_pending_quotient(&counts);
+            counts[best] += 1;
+            done += 1;
+        }
+        while done > n {
+            let worst = self
+                .smallest_handed_out_quotient(&counts)
+                .expect("cannot hand back a batch, nothing was handed out");
+            counts[worst] -= 1;
+            done -= 1;
+        }
+        // NOTE: the starting divisor is a float estimate, so the counts above are
+        //       only *an* apportionment of 'n'. Moving a batch from the group with
+        //       the smallest handed out quotient to the one with the biggest
+        //       pending quotient, while that is an improvement, makes the result
+        //       the canonical apportionment no matter what the estimate was.
+        loop {
+            let best = self.biggest_pending_quotient(&counts);
+            let Some(worst) = self.smallest_handed_out_quotient(&counts) else {
+                break;
+            };
+            if best == worst
+                || Self::quotient_cmp(
+                    (self.group_batches[best], counts[best], best),
+                    (self.group_batches[worst], counts[worst] - 1, worst),
+                ) != Ordering::Greater
+            {
+                break;
+            }
+            counts[best] += 1;
+            counts[worst] -= 1;
+        }
+        counts
     }
 
     /// Maps a group-local row rank to a position in that group's own coordinate
@@ -158,40 +299,35 @@ impl RowDistributionPreset {
     /// Returns the partition index and the global row indexes of the batch that
     /// the given stress iteration index addresses.
     ///
-    /// Consecutive iterations walk the partitions of a group round-robin and
-    /// only then advance to the next batch of each partition, so consecutive
-    /// batches keep landing on different partitions.
-    pub async fn get_partition_batch(&self, idx: u64, batch_size: u64) -> (u64, Vec<u64>) {
-        let mut remaining = idx % self.count_batches(batch_size);
-        let mut partn_offset: u64 = 0;
-        for (group_idx, partition_group) in self.partition_groups.iter().enumerate() {
-            let batches_per_partition = partition_group.n_rows_per_partition.div_ceil(batch_size);
-            let group_batches = partition_group.n_partitions * batches_per_partition;
-            if remaining < group_batches {
-                let lane = remaining % partition_group.n_partitions;
-                let first_rank = (remaining / partition_group.n_partitions) * batch_size;
-                let rows_num = std::cmp::min(
-                    batch_size,
-                    partition_group.n_rows_per_partition - first_rank,
-                );
-                let rows = (0..rows_num)
-                    .map(|i| {
-                        self.global_row_idx(
-                            group_idx,
-                            (first_rank + i) * partition_group.n_partitions + lane,
-                        )
-                    })
-                    .collect();
-                return (partn_offset + lane, rows);
-            }
-            remaining -= group_batches;
-            partn_offset += partition_group.n_partitions;
-        }
-        panic!(
-            "Failed to match stress iteration index and a partition batch! \
-            Most probably row distribution values were incorrectly calculated \
-            according to the partition groups data."
+    /// The partition groups are picked proportionally to their number of
+    /// batches, so any prefix of a pass keeps the partition size proportions of
+    /// the preset within a single batch. Inside a group the partitions are
+    /// walked one by one before the next batch of each of them follows, so
+    /// consecutive batches keep landing on different partitions.
+    pub async fn get_partition_batch(&self, idx: u64) -> (u64, Vec<u64>) {
+        assert!(
+            self.batch_size > 0,
+            "Batch size is not set for this preset, cannot proceed"
         );
+        let idx = idx % self.total_batches;
+        let counts = self.group_counts_at(idx);
+        // the batch of this stress iteration goes to the group whose pending
+        // batch has the biggest quotient, which is what keeps every group at its
+        // size proportion for any prefix of a pass
+        let group_idx = self.biggest_pending_quotient(&counts);
+        let group_position = counts[group_idx];
+        let partition_group = &self.partition_groups[group_idx];
+        let n_partitions = partition_group.n_partitions;
+        let lane = group_position % n_partitions;
+        let first_rank = (group_position / n_partitions) * self.batch_size;
+        let rows_num = std::cmp::min(
+            self.batch_size,
+            partition_group.n_rows_per_partition - first_rank,
+        );
+        let rows = (0..rows_num)
+            .map(|i| self.global_row_idx(group_idx, (first_rank + i) * n_partitions + lane))
+            .collect();
+        (self.partn_offset(group_idx) + lane, rows)
     }
 
     pub fn generate_row_distributions(&mut self) {
@@ -694,7 +830,7 @@ async fn _get_partition_batch(
             Call 'set_partition_batch_size' in the 'prepare' function first."
         ))));
     }
-    Ok(preset.get_partition_batch(idx, preset.batch_size).await)
+    Ok(preset.get_partition_batch(idx).await)
 }
 
 /// Computes the greatest common divisor of 2 numbers, useful for rows distribution among DB partitions
@@ -886,13 +1022,15 @@ mod tests {
     fn test_partition_batch_02_full_and_exact_coverage() {
         for (name, preset) in batch_test_presets() {
             for batch_size in [1, 2, 3, 4, 5, 6, 7, 13, 100] {
-                let total_batches = preset.count_batches(batch_size);
+                let mut preset = preset.clone();
+                preset.set_batch_size(batch_size);
+                let total_batches = preset.total_batches;
                 let mut seen_rows: Vec<bool> = vec![false; preset.total_rows as usize];
                 let mut rows_per_partition: HashMap<u64, u64> = HashMap::new();
                 tokio::runtime::Runtime::new().unwrap().block_on(async {
                     for idx in 0..total_batches {
                         let (partition_idx, rows) =
-                            preset.get_partition_batch(idx, batch_size).await;
+                            preset.get_partition_batch(idx).await;
                         for row in rows {
                             assert!(
                                 !seen_rows[row as usize],
@@ -928,11 +1066,13 @@ mod tests {
     fn test_partition_batch_03_batch_invariants() {
         for (name, preset) in batch_test_presets() {
             for batch_size in [1, 4, 7, 100] {
-                let total_batches = preset.count_batches(batch_size);
+                let mut preset = preset.clone();
+                preset.set_batch_size(batch_size);
+                let total_batches = preset.total_batches;
                 tokio::runtime::Runtime::new().unwrap().block_on(async {
                     for idx in 0..total_batches {
                         let (partition_idx, rows) =
-                            preset.get_partition_batch(idx, batch_size).await;
+                            preset.get_partition_batch(idx).await;
                         assert!(
                             !rows.is_empty(),
                             "preset '{name}', batch_size {batch_size}, batch {idx} is empty",
@@ -976,17 +1116,19 @@ mod tests {
     fn test_partition_batch_04_wraparound() {
         for (name, preset) in batch_test_presets() {
             for batch_size in [2, 5] {
-                let total_batches = preset.count_batches(batch_size);
+                let mut preset = preset.clone();
+                preset.set_batch_size(batch_size);
+                let total_batches = preset.total_batches;
                 tokio::runtime::Runtime::new().unwrap().block_on(async {
                     for idx in [0, 1, 7, total_batches - 1] {
                         assert_eq!(
-                            preset.get_partition_batch(idx, batch_size).await,
-                            preset.get_partition_batch(idx + total_batches, batch_size).await,
+                            preset.get_partition_batch(idx).await,
+                            preset.get_partition_batch(idx + total_batches).await,
                             "preset '{name}', batch_size {batch_size}, idx {idx}",
                         );
                         assert_eq!(
-                            preset.get_partition_batch(idx, batch_size).await,
-                            preset.get_partition_batch(idx + total_batches * 3, batch_size).await,
+                            preset.get_partition_batch(idx).await,
+                            preset.get_partition_batch(idx + total_batches * 3).await,
                             "preset '{name}', batch_size {batch_size}, idx {idx}",
                         );
                     }
@@ -1000,13 +1142,12 @@ mod tests {
     #[test]
     fn test_partition_batch_05_batch_size_one() {
         for (name, preset) in batch_test_presets() {
-            assert_eq!(
-                preset.total_rows, preset.count_batches(1),
-                "preset '{name}'",
-            );
+            let mut preset = preset.clone();
+            preset.set_batch_size(1);
+            assert_eq!(preset.total_rows, preset.total_batches, "preset '{name}'");
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 for idx in 0..preset.total_rows {
-                    let (partition_idx, rows) = preset.get_partition_batch(idx, 1).await;
+                    let (partition_idx, rows) = preset.get_partition_batch(idx).await;
                     assert_eq!(1, rows.len(), "preset '{name}', idx {idx}");
                     let (expected_partition_idx, _) = preset.get_partition_info(rows[0]).await;
                     assert_eq!(expected_partition_idx, partition_idx, "preset '{name}', idx {idx}");
@@ -1018,12 +1159,12 @@ mod tests {
     /// A batch size bigger than a partition gets clamped to the partition size.
     #[test]
     fn test_partition_batch_06_batch_size_bigger_than_partition() {
-        let preset = build_preset(1000, 13, "100:1");
-        let batch_size = 1000;
-        assert_eq!(77, preset.count_batches(batch_size));
+        let mut preset = build_preset(1000, 13, "100:1");
+        preset.set_batch_size(1000);
+        assert_eq!(77, preset.total_batches);
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            for idx in 0..preset.count_batches(batch_size) {
-                let (partition_idx, rows) = preset.get_partition_batch(idx, batch_size).await;
+            for idx in 0..preset.total_batches {
+                let (partition_idx, rows) = preset.get_partition_batch(idx).await;
                 let (_, rows_num) = preset.get_partition_info(rows[0]).await;
                 assert_eq!(
                     rows_num, rows.len() as u64,
@@ -1060,6 +1201,98 @@ mod tests {
             // 40 partitions, 25 rows each -> 7 batches per partition
             assert_eq!(280, preset.total_batches);
         });
+    }
+
+
+    /// Every prefix of a pass must keep the partition size proportions of the
+    /// preset, within a single batch. A batch index which walks the partition
+    /// groups one after another, or which spreads them in long runs, would both
+    /// skew a time boxed run and make the reported latency step at every group
+    /// boundary.
+    #[test]
+    fn test_partition_batch_08_groups_are_picked_proportionally() {
+        for (name, preset) in batch_test_presets() {
+            if preset.partition_groups.len() < 2 {
+                continue;
+            }
+            for batch_size in [1, 3, 4] {
+                let mut preset = preset.clone();
+                preset.set_batch_size(batch_size);
+                let mut partition_range_ends: Vec<u64> = Vec::new();
+                let mut partn_offset = 0;
+                for pg in &preset.partition_groups {
+                    partn_offset += pg.n_partitions;
+                    partition_range_ends.push(partn_offset);
+                }
+                let mut seen = vec![0u64; partition_range_ends.len()];
+                tokio::runtime::Runtime::new().unwrap().block_on(async {
+                    for idx in 0..preset.total_batches {
+                        let (partition_idx, _) = preset.get_partition_batch(idx).await;
+                        let group_idx = partition_range_ends
+                            .iter()
+                            .position(|end| partition_idx < *end)
+                            .expect("partition index out of range");
+                        seen[group_idx] += 1;
+                        // after every single batch every group must still be
+                        // within one batch of its exact share
+                        let done = idx + 1;
+                        for (group_idx, count) in seen.iter().enumerate() {
+                            let ideal = done as f64 * preset.group_batches[group_idx] as f64
+                                / preset.total_batches as f64;
+                            assert!(
+                                (*count as f64 - ideal).abs() <= 1.5,
+                                "preset '{name}', batch_size {batch_size}: after {done} batches \
+                                group {group_idx} got {count} of them, its exact share is {ideal}",
+                            );
+                        }
+                    }
+                });
+                assert_eq!(
+                    preset.group_batches, seen,
+                    "preset '{name}', batch_size {batch_size}: a full pass must give every group \
+                    exactly its number of batches",
+                );
+            }
+        }
+    }
+
+    /// Growing the number of handed out batches by 1 must add a batch to exactly
+    /// one group and never take one away from another. The position of a batch
+    /// inside its group is its group count, so a group which loses a count would
+    /// reuse a position and write the same rows twice.
+    #[test]
+    fn test_partition_batch_09_group_counts_are_house_monotone() {
+        for (name, preset) in batch_test_presets() {
+            for batch_size in [1, 2, 3, 4, 7] {
+                let mut preset = preset.clone();
+                preset.set_batch_size(batch_size);
+                let mut previous = preset.group_counts_at(0);
+                assert!(previous.iter().all(|count| *count == 0), "preset '{name}'");
+                for n in 1..=preset.total_batches {
+                    let current = preset.group_counts_at(n);
+                    let grown: Vec<usize> = (0..current.len())
+                        .filter(|group_idx| current[*group_idx] != previous[*group_idx])
+                        .collect();
+                    assert_eq!(
+                        1, grown.len(),
+                        "preset '{name}', batch_size {batch_size}: going from {} to {n} batches \
+                        changed {} groups, {previous:?} -> {current:?}",
+                        n - 1, grown.len(),
+                    );
+                    assert_eq!(
+                        previous[grown[0]] + 1, current[grown[0]],
+                        "preset '{name}', batch_size {batch_size}: group {} did not grow by 1",
+                        grown[0],
+                    );
+                    previous = current;
+                }
+                assert_eq!(
+                    preset.group_batches, previous,
+                    "preset '{name}', batch_size {batch_size}: a full pass must hand out every \
+                    group exactly its number of batches",
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Consecutive stress iteration indexes are mapped to different partitions in a round robin manner.">
+<style>.bgcard{fill:#f6f8fa;stroke:#d0d7de}.card{fill:#ffffff;stroke:#d0d7de}.b-blue{fill:#ddf4ff;stroke:#0969da}.b-red{fill:#ffebe9;stroke:#cf222e}.b-green{fill:#dafbe3;stroke:#1a7f37}.b-purple{fill:#fbefff;stroke:#8250df}.t-ink{fill:#1f2328}.t-muted{fill:#656d76}.t-blue{fill:#0969da}.t-red{fill:#cf222e}.t-green{fill:#1a7f37}.t-purple{fill:#8250df}.l-muted{stroke:#656d76}.l-green{stroke:#1a7f37}.l-red{stroke:#cf222e}.l-border{stroke:#d0d7de}.m-muted{fill:#656d76}.m-green{fill:#1a7f37}.m-red{fill:#cf222e}
+@media (prefers-color-scheme:dark){.bgcard{fill:#0d1117;stroke:#30363d}.card{fill:#161b22;stroke:#30363d}.b-blue{fill:#121d2f;stroke:#58a6ff}.b-red{fill:#25171c;stroke:#f85149}.b-green{fill:#12261e;stroke:#3fb950}.b-purple{fill:#1d1b2e;stroke:#bc8cff}.t-ink{fill:#e6edf3}.t-muted{fill:#8b949e}.t-blue{fill:#58a6ff}.t-red{fill:#f85149}.t-green{fill:#3fb950}.t-purple{fill:#bc8cff}.l-muted{stroke:#8b949e}.l-green{stroke:#3fb950}.l-red{stroke:#f85149}.l-border{stroke:#30363d}.m-muted{fill:#8b949e}.m-green{fill:#3fb950}.m-red{fill:#f85149}}</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-muted"/></marker><marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-green"/></marker><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-red"/></marker></defs>
+<rect class="bgcard" x="0.5" y="0.5" width="979" height="309" rx="8"/>
+<text class="t-ink" x="28" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="16" text-anchor="start" font-weight="600">Addressing rows: consecutive indexes land on different partitions</text>
+<text class="t-muted" x="28" y="60" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="start" font-weight="normal">db.get_partition_info("main", idx)   ·   4 partitions of 4 rows</text>
+<text class="t-muted" x="28" y="88" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" text-anchor="start" font-weight="normal">STRESS ITERATION INDEX</text>
+<rect class="card" x="28.0" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="78.25" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">i = 0</text>
+<rect class="card" x="143.5" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="193.75" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">1</text>
+<rect class="card" x="259.0" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="309.25" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">2</text>
+<rect class="card" x="374.5" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="424.75" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">3</text>
+<rect class="card" x="490.0" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="540.25" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">4</text>
+<rect class="card" x="605.5" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="655.75" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">5</text>
+<rect class="card" x="721.0" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="771.25" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">6</text>
+<rect class="card" x="836.5" y="98" width="100.5" height="34" rx="5"/>
+<text class="t-ink" x="886.75" y="120" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle" font-weight="normal">7</text>
+<path class="l-muted" d="M78.25 134 L137.5 194" fill="none" stroke-width="1.2" marker-end="url(#a)"/>
+<path class="l-muted" d="M193.75 134 L372.5 194" fill="none" stroke-width="1.2" marker-end="url(#a)"/>
+<path class="l-muted" d="M309.25 134 L607.5 194" fill="none" stroke-width="1.2" marker-end="url(#a)"/>
+<path class="l-muted" d="M424.75 134 L842.5 194" fill="none" stroke-width="1.2" marker-end="url(#a)"/>
+<path class="l-muted" d="M540.25 134 L137.5 194" fill="none" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#a)"/>
+<path class="l-muted" d="M655.75 134 L372.5 194" fill="none" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#a)"/>
+<path class="l-muted" d="M771.25 134 L607.5 194" fill="none" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#a)"/>
+<path class="l-muted" d="M886.75 134 L842.5 194" fill="none" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#a)"/>
+<rect class="b-blue" x="28.0" y="198" width="219.0" height="68" rx="5"/>
+<text class="t-blue" x="137.5" y="222" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14" text-anchor="middle" font-weight="600">pk = P0</text>
+<text class="t-muted" x="137.5" y="246" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="middle" font-weight="normal">gets idx 0, 4, 8, 12</text>
+<rect class="b-blue" x="263.0" y="198" width="219.0" height="68" rx="5"/>
+<text class="t-blue" x="372.5" y="222" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14" text-anchor="middle" font-weight="600">pk = P1</text>
+<text class="t-muted" x="372.5" y="246" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="middle" font-weight="normal">gets idx 1, 5, 9, 13</text>
+<rect class="b-blue" x="498.0" y="198" width="219.0" height="68" rx="5"/>
+<text class="t-blue" x="607.5" y="222" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14" text-anchor="middle" font-weight="600">pk = P2</text>
+<text class="t-muted" x="607.5" y="246" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="middle" font-weight="normal">gets idx 2, 6, 10, 14</text>
+<rect class="b-blue" x="733.0" y="198" width="219.0" height="68" rx="5"/>
+<text class="t-blue" x="842.5" y="222" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14" text-anchor="middle" font-weight="600">pk = P3</text>
+<text class="t-muted" x="842.5" y="246" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" text-anchor="middle" font-weight="normal">gets idx 3, 7, 11, 15</text>
+<text class="t-muted" x="28" y="290" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" text-anchor="start" font-weight="normal">This is what spreads the reads over the cluster - and why a batch built from consecutive indexes</text>
+<text class="t-muted" x="28" y="306" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" text-anchor="start" font-weight="normal">would touch four different partitions.</text>
+</svg>
