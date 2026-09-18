@@ -1,0 +1,180 @@
+// This rune script shows how we can do following:
+// - Write data using single-partition LOGGED batches (see 'insert_batch' rune function).
+//   All the statements of such a batch target the same partition, so the DB is able
+//   to skip the batchlog.
+// - Validate the batch-written data using the row-granular 'get_partition_info' API,
+//   which proves that a batch-written data set is identical to a row-written one.
+//
+// The number of batches needed to write every row exactly once gets printed by the
+// 'set_partition_batch_size' function as 'total_batches'.
+// Use it as the '-d' value of the data population command.
+// Any other duration is valid too - the stress iteration index wraps around.
+// So longer runs just rewrite rows and shorter ones cover a part of the data set.
+//
+// USAGE:
+//
+// 1) Create schema:
+// $ latte schema workloads/batch_partition_validation.rn 172.17.0.2 -P tablets=false
+//
+// 2) Populate DB making the 50% of partitions contain 4 rows and other 50% contain 6 rows,
+//    writing them in batches of 2 rows.
+//    The '-d' value is the 'total_batches' number printed by the 'prepare' function
+//    for these exact parameters: 1000 partitions of 6 rows need 3 batches each and
+//    1000 partitions of 4 rows need 2 batches each, so 1000*3 + 1000*2 = 5000.
+//    A smaller value would leave a part of the partitions unwritten:
+// $ latte run workloads/batch_partition_validation.rn -q \
+//     -d 5000 -P row_count=10000 \
+//     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
+//     -P batch_size=2 -f insert_batch -- 172.17.0.2
+//
+// 3) Validate the number of rows of every partition:
+// $ latte run workloads/batch_partition_validation.rn -q \
+//     -d 10000 -P row_count=10000 \
+//     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
+//     -f get_many -- 172.17.0.2
+//
+// 4) Validate that every single row is where the row-granular API expects it:
+// $ latte run workloads/batch_partition_validation.rn -q \
+//     -d 10000 -P row_count=10000 \
+//     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
+//     -f get_by_ck -- 172.17.0.2
+//
+// 5) Validate the number of rows of every partition using a server-side count.
+//    Unlike the '3)' command it does not page rows back to the client, so it
+//    checks the same expectation independently of the paging behavior:
+// $ latte run workloads/batch_partition_validation.rn -q \
+//     -d 10000 -P row_count=10000 \
+//     -P rows_per_partition=1 -P partition_sizes="\"50:4,50:6\"" \
+//     -f count -- 172.17.0.2
+
+use latte::*;
+
+//////////////////////////////////
+///// SCHEMA creation params /////
+//////////////////////////////////
+const RECREATE_KEYSPACE = latte::param!("recreate_keyspace", false);
+const KEYSPACE = latte::param!("keyspace", "latte");
+const TABLE = latte::param!("table", "batch_partition_validation");
+const TABLETS = latte::param!("tablets", true);
+const REPLICATION_FACTOR = latte::param!("replication_factor", 3);
+const COMPACTION_STRATEGY = latte::param!("compaction_strategy", "IncrementalCompactionStrategy");
+
+////////////////////////////////////
+///// DATA manipulation params /////
+////////////////////////////////////
+const ROW_COUNT = latte::param!("row_count", 1_000_000);
+const ROWS_PER_PARTITION = latte::param!("rows_per_partition", 1);
+// NOTE: 'partition_sizes' defines set of 'percent:multiplier' pairs to create multi-row partitions
+// of different sizes. Example: '95:1,4:2,1:4'
+const PARTITION_SIZES = latte::param!("partition_sizes", "100:1");
+// NOTE: 'batch_size' is an upper bound, not an exact size. A batch never spans 2
+// partitions, so the last batch of a partition is shorter when the partition size
+// is not a multiple of this value.
+const BATCH_SIZE = latte::param!("batch_size", 2);
+
+const P_STMT = #{
+    "INSERT": #{
+        "NAME": "p_stmt_batch_partition_validation__insert",
+        "CQL": `INSERT INTO ${KEYSPACE}.${TABLE}(pk, ck) VALUES (:pk, :ck)`,
+    },
+    "GET_MANY": #{
+        "NAME": "p_stmt_batch_partition_validation__get_many",
+        "CQL": `SELECT pk, ck FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk LIMIT :max_limit`,
+    },
+    "GET_BY_CK": #{
+        "NAME": "p_stmt_batch_partition_validation__get_by_ck",
+        "CQL": `SELECT pk, ck FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk AND ck = :ck`,
+    },
+    "COUNT": #{
+        "NAME": "p_stmt_batch_partition_validation__count",
+        "CQL": `SELECT COUNT(*) FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk`,
+    },
+};
+
+pub async fn schema(db) {
+    if RECREATE_KEYSPACE {
+        println!(
+            "rune-info: Recreating '{keyspace}' keyspace",
+            keyspace=KEYSPACE,
+        );
+        db.execute(`DROP KEYSPACE IF EXISTS ${KEYSPACE}`).await?;
+    }
+    db.execute(`
+        CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
+        WITH replication = {
+          'class'              : 'NetworkTopologyStrategy',
+          'replication_factor' : ${REPLICATION_FACTOR}
+        }
+        AND tablets = {'enabled': ${TABLETS}}
+    `).await?;
+    db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE} (
+        pk bigint,
+        ck bigint,
+
+        PRIMARY KEY (pk, ck)
+    ) WITH compaction = { 'class' : '${COMPACTION_STRATEGY}' }`).await?;
+}
+
+pub async fn prepare(db) {
+    assert!(ROW_COUNT > 0, "'row_count' cannot be less than '1'");
+    assert!(ROWS_PER_PARTITION > 0, "'rows_per_partition' cannot be less than '1'");
+    assert!(BATCH_SIZE > 0, "'batch_size' cannot be less than '1'");
+    db.init_partition_row_distribution_preset(
+        "main", ROW_COUNT, ROWS_PER_PARTITION, PARTITION_SIZES,
+    ).await?;
+    db.set_partition_batch_size("main", BATCH_SIZE).await?;
+    db.prepare(P_STMT.INSERT.NAME, P_STMT.INSERT.CQL).await?;
+    db.prepare(P_STMT.GET_MANY.NAME, P_STMT.GET_MANY.CQL).await?;
+    db.prepare(P_STMT.GET_BY_CK.NAME, P_STMT.GET_BY_CK.CQL).await?;
+    db.prepare(P_STMT.COUNT.NAME, P_STMT.COUNT.CQL).await?;
+}
+
+// User functions
+
+// Writes one single-partition LOGGED batch per stress iteration.
+pub async fn insert_batch(db, i) {
+    let batch = db.get_partition_batch("main", i).await?;
+    let pk = hash(batch.idx);
+    let stmt_names = [];
+    let stmt_params = [];
+    for idx in batch.rows {
+        stmt_names.push(P_STMT.INSERT.NAME);
+        stmt_params.push([pk, hash(idx)]);
+    }
+    db.batch_prepared(stmt_names, stmt_params).await?
+}
+
+// Makes sure that every partition has exactly the number of rows the preset declares.
+// Fails if the batch write path mis-distributed, dropped or duplicated any row.
+pub async fn get_many(db, i) {
+    let idx = i % ROW_COUNT;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+    let max_limit = partition.rows_num + 10; // make it be bigger than the expected value
+    let custom_err = `partition ${partition.idx}: expected ${partition.rows_num} row(s)`;
+    let validation_args = [partition.rows_num, custom_err];
+    db.execute_prepared_with_validation(P_STMT.GET_MANY.NAME, [pk, max_limit], validation_args).await?
+}
+
+// Makes sure that the exact 'pk'/'ck' pair which the row-granular API expects for a
+// stress iteration index exists.
+// Fails if the batch write path put a row into a wrong partition or under a wrong clustering key.
+pub async fn get_by_ck(db, i) {
+    let idx = i % ROW_COUNT;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+    let ck = hash(idx);
+    let custom_err = `missing row pk=${pk} ck=${ck} (stress iteration index ${idx})`;
+    let validation_args = [1, 1, custom_err]; // Use 2 digit-args to cover the feature widely
+    db.execute_prepared_with_validation(P_STMT.GET_BY_CK.NAME, [pk, ck], validation_args).await?
+}
+
+// Makes sure that the server-side rows count of a partition is as expected.
+pub async fn count(db, i) {
+    let idx = i % ROW_COUNT;
+    let partition = db.get_partition_info("main", idx).await;
+    let pk = hash(partition.idx);
+    let custom_err = `partition ${partition.idx}: expected count ${partition.rows_num}`;
+    let validation_args = [partition.rows_num, custom_err];
+    db.execute_prepared_with_validation(P_STMT.COUNT.NAME, [pk], validation_args).await?
+}

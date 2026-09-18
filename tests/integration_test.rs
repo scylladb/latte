@@ -542,3 +542,113 @@ async fn test_latte_cql_row_count_validation_workload() {
         }
     }
 }
+
+/// Extracts the `total_batches` value from the `set_partition_batch_size` info
+/// line printed by the `prepare` function of a batched workload.
+fn parse_total_batches(result: &CommandResult) -> u64 {
+    result
+        .output
+        .lines()
+        .find(|line| line.contains("set_partition_batch_size:"))
+        .and_then(|line| line.split("total_batches=").nth(1))
+        .and_then(|value| value.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("no total_batches in latte output:\n{}", result.output))
+}
+
+/// Writes data in single-partition LOGGED batches via the partition row
+/// distribution preset, then validates it through the row-granular API.
+/// The validation phases are the real assertions: they fail if a single row
+/// landed in a wrong partition, got dropped or got written twice.
+#[tokio::test]
+#[ignore]
+async fn test_latte_cql_batch_partition_workload() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("batch_partition_validation.rn");
+    let row_count = "1000";
+
+    #[rustfmt::skip]
+    let cases: [(&str, &[&str]); 2] = [
+        (
+            "even",
+            &[
+                "-P", &format!("row_count={row_count}"),
+                "-P", "rows_per_partition=5",
+                "-P", "partition_sizes=\"100:1\"",
+                "-P", "batch_size=2",
+            ],
+        ),
+        (
+            "skewed-ragged",
+            &[
+                "-P", &format!("row_count={row_count}"),
+                "-P", "rows_per_partition=2",
+                "-P", "partition_sizes=\"50:1,30:2,20:5\"",
+                "-P", "batch_size=3",
+            ],
+        ),
+    ];
+
+    for (label, params) in cases {
+        println!("\n[TEST-INFO] ===== case '{label}' =====");
+        let mut args: Vec<&str> = params.to_vec();
+        // NOTE: use unique keyspace to be able to recreate it
+        args.extend(["-P", "keyspace=\"latte_batch_partition_validation\""]);
+        if db._container.is_some() {
+            args.extend(["-P", "replication_factor=1"]); // Running in a single container
+        }
+
+        println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+        let mut schema_args = args.clone();
+        schema_args.extend(["-P", "recreate_keyspace=true", "-P", "tablets=false"]);
+        latte.schema(&db, &workload, &schema_args);
+
+        println!("\n[TEST-INFO] Phase 2: Discover the number of batches");
+        let mut populate_args = args.clone();
+        populate_args.push("-f=insert_batch");
+        let probe_result = latte.run(&db, &workload, "1", &populate_args);
+        assert_latte_success(&probe_result);
+        let total_batches = parse_total_batches(&probe_result);
+        println!("[TEST-INFO] total_batches={total_batches}");
+
+        println!("\n[TEST-INFO] Phase 3: Data population using batches");
+        let populate_result = latte.run(&db, &workload, &total_batches.to_string(), &populate_args);
+        assert_latte_success(&populate_result);
+        assert_no_errors(&populate_result);
+        assert_has_throughput_metrics(&populate_result);
+
+        for function in ["get_many", "get_by_ck", "count"] {
+            println!("\n[TEST-INFO] Phase 4: Data validation using '{function}'");
+            let mut validation_args = args.clone();
+            let function_arg = format!("-f={function}");
+            validation_args.push(&function_arg);
+            let validation_result = latte.run(&db, &workload, row_count, &validation_args);
+            assert_latte_success(&validation_result);
+            assert_no_errors(&validation_result);
+        }
+
+        println!("\n[TEST-INFO] Phase 5: Time based duration must be accepted");
+        let timed_result = latte.run(&db, &workload, "5s", &populate_args);
+        assert_latte_success(&timed_result);
+        assert_no_errors(&timed_result);
+
+        println!("\n[TEST-INFO] Phase 6: Overrunning the number of batches is safe");
+        let overrun_result = latte.run(
+            &db,
+            &workload,
+            &(total_batches * 3).to_string(),
+            &populate_args,
+        );
+        assert_latte_success(&overrun_result);
+        assert_no_errors(&overrun_result);
+
+        println!("\n[TEST-INFO] Phase 7: Data is still valid after the wraparounds");
+        let mut validation_args = args.clone();
+        validation_args.push("-f=get_many");
+        let validation_result = latte.run(&db, &workload, row_count, &validation_args);
+        assert_latte_success(&validation_result);
+        assert_no_errors(&validation_result);
+    }
+}
