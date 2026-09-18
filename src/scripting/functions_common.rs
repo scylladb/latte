@@ -55,7 +55,10 @@ pub struct ValidationArgs {
 ///  * [Integer, String] -> Exact number of expected rows and custom error message.
 ///  * [Integer, Integer, String] -> Range of expected rows and custom error message.
 pub fn extract_validation_args(validation_args: Vec<Value>) -> Result<ValidationArgs, String> {
-    let as_int = |v: &Value| v.as_signed().ok().map(|i| i as u64);
+    // NOTE: 'as_integer' accepts both signed and unsigned rune integers. Values
+    //       coming from the partitions preset, such as 'partition.rows_num', are
+    //       unsigned and would be rejected by a signed-only accessor.
+    let as_int = |v: &Value| v.as_integer::<u64>().ok();
     let as_str = |v: &Value| {
         v.borrow_ref::<rune::alloc::String>()
             .ok()
@@ -392,6 +395,51 @@ pub fn declare_metric(ctx: &Context, name: Ref<str>, orientation: Ref<str>) -> V
 mod test {
     use super::*;
     use crate::config::{RetryInterval, ValidationStrategy};
+
+    /// Validation arguments must be accepted no matter whether the rune values
+    /// are signed or unsigned. Values taken from the partitions preset, such as
+    /// 'partition.rows_num', are unsigned.
+    /// Ref: a regression of the 'Upgrade rune from 0.13 to 0.14' change, which
+    /// left 'extract_validation_args' reading signed integers only.
+    #[test]
+    fn extract_validation_args_accepts_unsigned_integers() {
+        let signed = |v: i64| rune::to_value(v).expect("failed to build a signed value");
+        let unsigned = |v: u64| rune::to_value(v).expect("failed to build an unsigned value");
+        let text = |v: &str| rune::to_value(v).expect("failed to build a string value");
+
+        for (label, args) in [
+            ("[uint]", vec![unsigned(7)]),
+            ("[uint, uint]", vec![unsigned(7), unsigned(9)]),
+            ("[uint, str]", vec![unsigned(7), text("boom")]),
+            (
+                "[uint, uint, str]",
+                vec![unsigned(7), unsigned(9), text("boom")],
+            ),
+            (
+                "[int, uint, str]",
+                vec![signed(7), unsigned(9), text("boom")],
+            ),
+            (
+                "[uint, int, str]",
+                vec![unsigned(7), signed(9), text("boom")],
+            ),
+        ] {
+            let parsed = extract_validation_args(args)
+                .unwrap_or_else(|e| panic!("{label} must be accepted, got '{e}'"));
+            assert_eq!(7, parsed.expected_min, "{label}");
+        }
+
+        // Signed values must keep working
+        let parsed = extract_validation_args(vec![signed(1), text("boom")])
+            .expect("[int, str] must be accepted");
+        assert_eq!(1, parsed.expected_min);
+        assert_eq!(1, parsed.expected_max);
+        assert_eq!("boom", parsed.custom_err_msg);
+
+        // Garbage is still rejected
+        assert!(extract_validation_args(vec![]).is_err());
+        assert!(extract_validation_args(vec![text("nope")]).is_err());
+    }
 
     #[cfg(feature = "cql")]
     fn test_context() -> Context {
