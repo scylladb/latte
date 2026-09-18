@@ -4,6 +4,7 @@
 |---|---|
 | **CQL** (Cassandra / ScyllaDB) | You're in the right place — keep reading |
 | **DynamoDB / Alternator** | **[See ALTERNATOR.md](ALTERNATOR.md)** — full docs for `latte-alternator` |
+| **Multi-row partitions of different sizes** | **[See PARTITION_PRESETS.md](PARTITION_PRESETS.md)** — partition row distribution presets and single-partition batches |
 
 **Runs custom CQL workloads against a Cassandra cluster and measures throughput and response times**
 
@@ -543,37 +544,26 @@ latte run <workload> -P row_count=200
 
 ### Multi-row partitions with different row count
 
-If there is a need to simulate real-life case where we have multi-row partitions
-and their sizes differ we can easily cover it with latte.
+Real-life data sets have multi-row partitions of different sizes.
+Latte covers that with *partition row distribution presets*: a preset describes the wanted
+partition sizes and their proportions, and maps a stress iteration index to a partition index
+for you. The same presets also allow writing `LOGGED` batches which never span more than one
+partition, letting the DB skip the batchlog.
 
-First step is to define following function in the `prepare` section of a rune script:
 ```
   pub async fn prepare(db) {
-    ...
     db.init_partition_row_distribution_preset(
       "foo", ROW_COUNT, ROWS_PER_PARTITION, "70:1,20:2.5,10:3.5").await?;
-    ...
   }
-```
 
-With this function we pre-create a preset with the `foo` name
-and instruct it to calculate number of partitions and their rows-sizes like following:
-- `70%` of partitions will be of the `ROWS_PER_PARTITION` size
-- `20%` of `2.5*ROWS_PER_PARTITION`
-- `10%` of the `3.5*ROWS_PER_PARTITION`.
-
-Then, in the target functions we can reuse it like following:
-```
   pub async fn insert(db, i) {
-    let idx = i % ROW_COUNT + OFFSET;
-    let partition_idx = db.get_partition_idx("foo", idx).await + OFFSET;
+    let partition = db.get_partition_info("foo", i % ROW_COUNT).await;
     ...
   }
 ```
 
-As a result we will be able to get multi-row partitions in a requested size proportions.
-
-Number of presets is unlimited. Any rune script may use multiple different presets for different tables.
+See **[PARTITION_PRESETS.md](PARTITION_PRESETS.md)** for the full description of the feature,
+its API, the batching functions and runnable examples.
 
 ### Validating number of rows for SELECT queries
 
