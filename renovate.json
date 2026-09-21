@@ -14,8 +14,23 @@
   ],
   "enabledManagers": [
     "cargo",
+    "custom.regex",
     "github-actions",
     "helm-values"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update GitHub runner images in 'runs-on' values that the github-actions manager skips, i.e. those where the runner label is glued to a '${{ ... }}' expression",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "runs-on:\\s*[\"']?(?<depName>ubuntu|windows|macos)-(?<currentValue>\\d+\\.\\d+)\\S*\\$\\{\\{"
+      ],
+      "datasourceTemplate": "github-runners",
+      "versioningTemplate": "docker"
+    }
   ],
   "cargo": {
     "rangeStrategy": "bump"
