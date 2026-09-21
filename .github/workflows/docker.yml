@@ -26,7 +26,7 @@ on:
 jobs:
   build-image:
     name: Build ${{ matrix.build.platform }}
-    runs-on: ubuntu-24.04${{ matrix.build.platform == 'linux/arm64/v8' && '-arm' || '' }}
+    runs-on: ubuntu-26.04${{ matrix.build.platform == 'linux/arm64/v8' && '-arm' || '' }}
     strategy:
       matrix:
         build:
@@ -76,7 +76,7 @@ jobs:
   push-images:
     name: Push Multiarch Images
     needs: build-image
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
