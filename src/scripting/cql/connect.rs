@@ -1,9 +1,10 @@
 use super::cass_error::{CassError, CassErrorKind};
 use super::context::Context;
 use crate::config::ConnectionConf;
+use crate::version::get_version_info;
 use openssl::ssl::{SslContextBuilder, SslFiletype, SslMethod, SslVerifyMode};
 use scylla::client::session::TlsContext;
-use scylla::client::PoolSize;
+use scylla::client::{PoolSize, SelfIdentity};
 use scylla::policies::load_balancing::DefaultPolicy;
 
 use scylla::client::execution_profile::ExecutionProfile;
@@ -31,7 +32,8 @@ fn tls_context(conf: &&ConnectionConf) -> Result<Option<TlsContext>, Box<CassErr
 }
 
 /// Configures connection to Cassandra.
-pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
+/// The 'client_id' is advertised to the server to tell concurrent latte calls apart.
+pub async fn connect(conf: &ConnectionConf, client_id: &str) -> Result<Context, CassError> {
     let mut policy_builder = DefaultPolicy::builder().token_aware(true);
     let mut datacenter: String = "".to_string();
     let mut rack: String = "".to_string();
@@ -62,6 +64,15 @@ pub async fn connect(conf: &ConnectionConf) -> Result<Context, CassError> {
         .pool_size(PoolSize::PerShard(conf.db.count))
         .user(&conf.db.user, &conf.db.password)
         .tls_context(tls_context(&conf)?)
+        // Makes latte runs tellable apart from any other client in 'system.clients'.
+        // The name stays constant to find all latte clients, while 'client_id' separates
+        // concurrent latte calls from each other. See the 'connect' callers for its source.
+        .custom_identity(
+            SelfIdentity::new()
+                .with_application_name("latte")
+                .with_application_version(get_version_info().latte_version)
+                .with_client_id(client_id.to_string()),
+        )
         .default_execution_profile_handle(profile.into_handle())
         .build()
         .await

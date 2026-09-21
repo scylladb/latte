@@ -114,10 +114,11 @@ fn find_workload(workload: &Path) -> PathBuf {
         .unwrap_or_else(|| workload.to_path_buf())
 }
 
-/// Connects to the server and returns the session
-async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<ClusterInfo>)> {
+/// Connects to the server and returns the session.
+/// The 'client_id' ends up in 'system.clients' to tell concurrent latte calls apart.
+async fn connect(conf: &ConnectionConf, client_id: &str) -> Result<(Context, Option<ClusterInfo>)> {
     eprintln!("info: Connecting to {:?}... ", conf.addresses);
-    let session = scripting::connect::connect(conf).await?;
+    let session = scripting::connect::connect(conf, client_id).await?;
     let cluster_info = session.cluster_info().await?;
     eprintln!(
         "info: Connected to '{}' cluster running {}",
@@ -137,7 +138,7 @@ async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<ClusterInfo>)
 /// Exits with error if the `schema` function is not present or fails.
 async fn schema(conf: SchemaCommand) -> Result<()> {
     let mut program = load_workload_script(&conf.workload, &conf.params)?;
-    let (session, _) = connect(&conf.connection).await?;
+    let (session, _) = connect(&conf.connection, "schema").await?;
     if !program.has_schema() {
         eprintln!("error: Function `schema` not found in the workload script.");
         exit(255);
@@ -155,7 +156,7 @@ async fn schema(conf: SchemaCommand) -> Result<()> {
 /// Exits with error if the `load` function is not present or fails.
 async fn load(conf: LoadCommand) -> Result<()> {
     let mut program = load_workload_script(&conf.workload, &conf.params)?;
-    let (session, _) = connect(&conf.connection).await?;
+    let (session, _) = connect(&conf.connection, "load").await?;
 
     if program.has_prepare() {
         eprintln!("info: Preparing...");
@@ -236,7 +237,15 @@ async fn run(conf: RunCommand) -> Result<()> {
         functions.push((function, f.weight))
     }
 
-    let (session, cluster_info) = connect(&conf.connection).await?;
+    // NOTE: prefer the tags, as they are what a caller labels a particular run with,
+    //       and fall back to the functions when no tag was given.
+    //       The 'tag--'/'fn--' prefix says which of the two a reader is looking at.
+    let client_id = if conf.tags.is_empty() {
+        format!("fn--{}", conf.functions.iter().join(","))
+    } else {
+        format!("tag--{}", conf.tags.join(","))
+    };
+    let (session, cluster_info) = connect(&conf.connection, &client_id).await?;
 
     // NOTE: Add info about the target rune functions to the context
     //       for the more flexible tweaking of the 'prepare' rune function.

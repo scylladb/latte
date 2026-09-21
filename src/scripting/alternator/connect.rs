@@ -8,7 +8,12 @@ use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::config::{Credentials, Region};
 use aws_sdk_dynamodb::error::DisplayErrorContext;
 
-pub async fn connect(conf: &ConnectionConf) -> Result<Context, AlternatorError> {
+/// The 'client_id' is unused here.
+/// Alternator speaks HTTP/DynamoDB and is not tracked in 'system.clients' at all.
+/// The driver's only identity knob is 'AlternatorBuilder:: app_name',
+/// which rides in the User-Agent where nothing can query it - and 'AppName'
+/// rejects ':' and ',', so the 'fn--' ids would not even construct.
+pub async fn connect(conf: &ConnectionConf, _client_id: &str) -> Result<Context, AlternatorError> {
     let address = conf
         .addresses
         .iter()
