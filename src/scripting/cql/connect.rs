@@ -3,7 +3,7 @@ use super::context::Context;
 use crate::config::ConnectionConf;
 use crate::version::get_version_info;
 use openssl::ssl::{SslContextBuilder, SslFiletype, SslMethod, SslVerifyMode};
-use scylla::client::session::TlsContext;
+use scylla::client::session::{OpenSsl010Config, TlsContext};
 use scylla::client::{PoolSize, SelfIdentity};
 use scylla::policies::load_balancing::DefaultPolicy;
 
@@ -25,7 +25,15 @@ fn tls_context(conf: &&ConnectionConf) -> Result<Option<TlsContext>, Box<CassErr
         if conf.db.ssl_peer_verification {
             ssl.set_verify(SslVerifyMode::PEER);
         }
-        Ok(Some(TlsContext::from(ssl.build())))
+        // NOTE: `TlsContext::from(ssl.build())` silently resolves to the deprecated `OpenSsl010`
+        //       and it cannot bank TLS tickets.
+        //       So, use the 'TlsContext::OpenSsl010Config(...)' one with `from_dangerous_builder`
+        //       which passes the raw context above.
+        //       The `::new` needs an `SslConnectorBuilder` and would layer its own defaults
+        //       (system trust store, cipher list, `set_verify(PEER)`) on top of ours.
+        Ok(Some(TlsContext::OpenSsl010Config(
+            OpenSsl010Config::from_dangerous_builder(ssl),
+        )))
     } else {
         Ok(None)
     }
