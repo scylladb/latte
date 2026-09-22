@@ -28,6 +28,22 @@ static IS_SELECT_QUERY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*select\b
 static IS_SELECT_COUNT_QUERY: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^\s*select\s+count\s*\(\s*[^)]*\s*\)").unwrap());
 
+/// What a single `_execute` call sends to the server: a statement registered
+/// earlier by `prepare`, or an ad-hoc one sent unprepared.
+enum ExecTarget {
+    Prepared(Arc<PreparedStatement>),
+    AdHoc(Statement),
+}
+
+impl ExecTarget {
+    fn cql(&self) -> &str {
+        match self {
+            Self::Prepared(stmt) => stmt.get_statement(),
+            Self::AdHoc(stmt) => &stmt.contents,
+        }
+    }
+}
+
 /// This is the main object that a workload script uses to interface with the outside world.
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
@@ -361,6 +377,35 @@ impl Context {
             .await
     }
 
+    /// Picks what a single `_execute` call sends to the server. Ad-hoc statements
+    /// are left unprepared on purpose: preparing them would create a server-side
+    /// entry per unique CQL text and thrash the cache. Needs no session.
+    #[allow(clippy::result_large_err)] // consistent with the async CassError APIs around it
+    fn resolve_target(
+        &self,
+        cql: Option<&str>,
+        key: Option<&str>,
+    ) -> Result<ExecTarget, CassError> {
+        match (cql, key) {
+            (Some(_), Some(_)) | (None, None) => Err(CassError(CassErrorKind::Error(
+                "Either 'cql' or 'key' is allowed, not both".to_string(),
+            ))),
+            (None, Some(key)) => Ok(ExecTarget::Prepared(
+                self.statements
+                    .try_lock()
+                    .unwrap()
+                    .get(key)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
+                    })?,
+            )),
+            (Some(cql), None) => Ok(ExecTarget::AdHoc(
+                Statement::new(cql).with_page_size(self.page_size as i32),
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn _execute(
         &self,
@@ -380,30 +425,8 @@ impl Context {
                 )))
             }
         };
-        if (cql.is_some() && key.is_some()) || (cql.is_none() && key.is_none()) {
-            return Err(CassError(CassErrorKind::Error(
-                "Either 'cql' or 'key' is allowed, not both".to_string(),
-            )));
-        }
-        let stmt = if let Some(key) = key {
-            self.statements
-                .try_lock()
-                .unwrap()
-                .get(key)
-                .cloned()
-                .ok_or_else(|| {
-                    CassError(CassErrorKind::PreparedStatementNotFound(key.to_string()))
-                })?
-        } else {
-            let cql = cql.expect("failed to unwrap the 'cql' parameter");
-            Arc::new(
-                session
-                    .prepare(Statement::new(cql).with_page_size(self.page_size as i32))
-                    .await
-                    .map_err(|e| CassError::prepare_error(cql, e))?,
-            )
-        };
-        let cql = stmt.get_statement();
+        let target = self.resolve_target(cql, key)?;
+        let cql = target.cql();
         let query_params = RuneQueryParams::new(params.as_ref());
         if (expected_rows_num_min.is_some() || expected_rows_num_max.is_some())
             && !IS_SELECT_QUERY.is_match(cql)
@@ -430,9 +453,18 @@ impl Context {
         let mut current_attempt_num = 0;
         while current_attempt_num <= self.retry_number {
             let start_time = self.stats.try_lock().unwrap().start_request();
-            let rs = session
-                .execute_single_page(&stmt, &query_params, paging_state.clone())
-                .await;
+            let rs = match &target {
+                ExecTarget::Prepared(stmt) => {
+                    session
+                        .execute_single_page(stmt, &query_params, paging_state.clone())
+                        .await
+                }
+                ExecTarget::AdHoc(stmt) => {
+                    session
+                        .query_single_page(stmt.clone(), &query_params, paging_state.clone())
+                        .await
+                }
+            };
             let current_duration = Instant::now() - start_time;
             let (page, paging_state_response) = match rs {
                 Ok(result) => result,
@@ -647,5 +679,63 @@ impl Context {
     pub fn reset(&self) {
         self.stats.try_lock().unwrap().reset();
         *self.start_time.try_lock().unwrap() = Instant::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE_SIZE: u64 = 501;
+
+    fn test_context() -> Context {
+        Context::new(
+            None,
+            PAGE_SIZE,
+            "dc".to_string(),
+            "rack".to_string(),
+            0,
+            RetryInterval::new("1,2").expect("failed to parse retry interval"),
+            ValidationStrategy::Ignore,
+        )
+    }
+
+    /// Ad-hoc statements must never be prepared: one server-side entry per unique
+    /// CQL text evicts the prepared statement cache and makes the server answer
+    /// with 'Unprepared' errors. Resolving with no session proves no PREPARE can
+    /// happen, since preparing requires one.
+    #[test]
+    fn ad_hoc_statement_is_not_prepared() {
+        let ctx = test_context();
+        assert!(ctx.session.is_none());
+
+        let cql = "SELECT pk, ck FROM latte.validation WHERE pk = 42 LIMIT 16";
+        let target = ctx
+            .resolve_target(Some(cql), None)
+            .expect("ad-hoc statement should resolve without a session");
+
+        match target {
+            ExecTarget::AdHoc(ref stmt) => assert_eq!(stmt.get_page_size(), PAGE_SIZE as i32),
+            ExecTarget::Prepared(_) => panic!("ad-hoc statement must not be prepared"),
+        }
+        assert_eq!(target.cql(), cql);
+    }
+
+    #[test]
+    fn unknown_prepared_statement_key_is_rejected() {
+        let Err(err) = test_context().resolve_target(None, Some("missing")) else {
+            panic!("unknown key should be rejected");
+        };
+        let CassError(CassErrorKind::PreparedStatementNotFound(key)) = &err else {
+            panic!("unexpected error: {err}");
+        };
+        assert_eq!(key, "missing");
+    }
+
+    #[test]
+    fn cql_and_key_are_mutually_exclusive() {
+        let ctx = test_context();
+        assert!(ctx.resolve_target(Some("SELECT 1"), Some("key")).is_err());
+        assert!(ctx.resolve_target(None, None).is_err());
     }
 }
