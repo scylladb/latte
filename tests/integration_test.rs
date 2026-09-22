@@ -247,10 +247,57 @@ fn run_command(mut cmd: Command) -> CommandResult {
         .output()
         .expect("Failed to run command");
 
-    CommandResult {
+    let result = CommandResult {
         status: output.status,
         output: String::from_utf8_lossy(&output.stdout).into_owned(),
-    }
+    };
+    assert_no_unprepared_statement_errors(&result);
+    result
+}
+
+/// The server answers with this when it evicted a statement that latte prepared,
+/// which happens once latte prepares a statement per unique CQL text. Latte
+/// retries it away, so it never reaches the 'Errors' stat - fail the test on the
+/// log lines instead, or the regression stays invisible.
+fn assert_no_unprepared_statement_errors(result: &CommandResult) {
+    let offending = unprepared_statement_errors(&result.output);
+    assert!(
+        offending.is_empty(),
+        "latte hit {} 'unprepared statement' error(s):\n{}",
+        offending.len(),
+        offending.join("\n")
+    );
+}
+
+fn unprepared_statement_errors(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .filter(|line| {
+            line.contains("Tried to execute a prepared statement that is not prepared")
+                || line.contains("No prepared statement with ID")
+        })
+        .collect()
+}
+
+/// The guard above only fires when the server happens to evict a statement
+/// mid-run, which is racy, so pin the detection itself to a real log sample.
+#[test]
+fn detects_unprepared_statement_errors_in_output() {
+    let error_line = concat!(
+        "2026-09-22 15:20:24.673: [ERROR][Attempt 0/10][Retry in 83 ms] Failed to ",
+        "execute query \"SELECT pk, ck FROM latte.validation WHERE pk = ",
+        "1295690196338469474 LIMIT 14\" with params []: Database returned an error: ",
+        "Tried to execute a prepared statement that is not prepared. Driver should ",
+        "prepare it again, Error message: No prepared statement with ID ",
+        "4e6dd9dd6c7a3112fbd673f2944783bc found.",
+    );
+    let stats_line = "   0.144      1000         0      6946           2.390     6.156";
+    let sample = format!("{error_line}\n{stats_line}");
+    assert_eq!(unprepared_statement_errors(&sample).len(), 1);
+
+    // A clean run, and latte's own 'unknown prepare key' error, must not trip it.
+    assert!(unprepared_statement_errors("Prepared statement not found: p_stmt__get").is_empty());
+    assert!(unprepared_statement_errors("   0.144  1000  0  6946").is_empty());
 }
 
 fn assert_latte_success(result: &CommandResult) {
