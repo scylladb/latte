@@ -177,6 +177,28 @@ would be sufficient. But if your average latency is 50 ms, you'd need 500 slots 
 When in doubt, increase `--concurrency` (or add threads) until the measured throughput
 matches your `--rate` target.
 
+### Many Connections per Client
+
+`--connections` (`-c`) is per shard, so one latte process opens `connections × shards × nodes`
+connections from a single client IP. The driver binds every shard-aware connection to its own local
+port from a 49152..65535 range and does not set `SO_REUSEADDR`, which caps one client IP at 16384
+such connections in total; past that it falls back to the non-shard-aware port and churns the excess.
+Two options lift the ceiling:
+
+```shell
+latte run ... -c 1200 --shard-aware-port-range 1024..65535 --tcp-reuse-address <node address>
+```
+
+`--shard-aware-port-range` widens the pool of local ports (up to ~64K). The driver strides the range
+by the node's shard count, so keep `connections` below `range_size / shards`: `1024..65535` is 64512
+ports, enough for 1200 connections per shard on nodes with up to 53 shards.
+
+`--tcp-reuse-address` sets `SO_REUSEADDR` on every connection socket, so the same local port can carry
+one connection to every node. Use it whenever the range is widened: otherwise latte holds low ports as
+established client sockets, and a co-located service that restarts during the run cannot rebind its
+own port. With `SO_REUSEADDR` on both sides the two do not conflict; check that the co-located service
+sets it too.
+
 ## Testing
 Latte has integration tests that run against a real ScyllaDB instance in a docker container. 
 To run them, execute: 

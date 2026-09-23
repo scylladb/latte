@@ -617,6 +617,14 @@ impl Display for RunConfigCmp<'_> {
             self.line("Connections", "", |conf| {
                 Quantity::from(conf.connection.db.count)
             }),
+            #[cfg(feature = "cql")]
+            self.line("Local port range", "", |conf| {
+                conf.connection.db.shard_aware_port_range.to_string()
+            }),
+            #[cfg(feature = "cql")]
+            self.line("TCP SO_REUSEADDR", "", |conf| {
+                conf.connection.db.tcp_reuse_address.to_string()
+            }),
             self.line("Concurrency", "req", |conf| {
                 Quantity::from(conf.concurrency)
             }),
@@ -995,4 +1003,58 @@ fn format_time(timestamp: Option<i64>, format: &str) -> String {
                 .map(|l| l.format(format).to_string())
         })
         .unwrap_or_default()
+}
+
+#[cfg(all(test, feature = "cql"))]
+mod tests {
+    use super::RunConfigCmp;
+    use crate::config::RunCommand;
+    use clap::Parser;
+
+    /// Renders the CONFIG section of a run report and returns the value in the row of 'label'.
+    fn config_value(args: &[&str], label: &str) -> Option<String> {
+        let args = ["latte", "workload.rn"].iter().chain(args).copied();
+        let conf = RunCommand::try_parse_from(args).unwrap();
+        let report = console::strip_ansi_codes(
+            &RunConfigCmp {
+                v1: &conf,
+                v2: None,
+            }
+            .to_string(),
+        )
+        .into_owned();
+        report
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix(label))
+            .and_then(|rest| rest.split_whitespace().next().map(str::to_string))
+    }
+
+    #[test]
+    fn connection_socket_options_are_shown_with_defaults() {
+        assert_eq!(
+            config_value(&[], "Local port range").as_deref(),
+            Some("49152..65535")
+        );
+        assert_eq!(
+            config_value(&[], "TCP SO_REUSEADDR").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn connection_socket_options_are_shown_as_given() {
+        let args = [
+            "--shard-aware-port-range",
+            "1024..65535",
+            "--tcp-reuse-address",
+        ];
+        assert_eq!(
+            config_value(&args, "Local port range").as_deref(),
+            Some("1024..65535")
+        );
+        assert_eq!(
+            config_value(&args, "TCP SO_REUSEADDR").as_deref(),
+            Some("true")
+        );
+    }
 }
