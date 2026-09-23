@@ -331,6 +331,21 @@ fn summary_stat(result: &CommandResult, label: &str) -> u64 {
         })
 }
 
+/// Extracts the value of a run report setting row such as "Connections 4".
+/// The label may contain spaces; the value is the last word of the row.
+fn report_setting(result: &CommandResult, label: &str) -> String {
+    result
+        .output
+        .lines()
+        .find_map(|line| {
+            line.trim_start()
+                .strip_prefix(label)
+                .and_then(|rest| rest.split_whitespace().last())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| panic!("no '{label}' setting in latte output:\n{}", result.output))
+}
+
 /// A `run` command exits successfully even when workload operations fail, so
 /// checking the exit status is not enough - the error count must be zero.
 fn assert_no_errors(result: &CommandResult) {
@@ -533,6 +548,44 @@ async fn test_rune_return_in_diverging_branches() {
     let read_result = latte.run(&db, &workload, duration, &["-f", "read"]);
     assert_latte_success(&read_result);
     assert_has_throughput_metrics(&read_result);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_latte_cql_wide_shard_aware_port_range() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("data_validation.rn");
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    let extra_args: &[&str] = match db._container {
+        Some(_) => &["-P", "replication_factor=1"], // Running in a single container
+        None => &[],
+    };
+    latte.schema(&db, &workload, extra_args);
+
+    println!("\n[TEST-INFO] Phase 2: Run with a widened shard-aware port range and SO_REUSEADDR");
+    let result = latte.run(
+        &db,
+        &workload,
+        "5000",
+        &[
+            "-f=insert",
+            "--connections=4",
+            "--shard-aware-port-range=1024..65535",
+            "--tcp-reuse-address",
+        ],
+    );
+    assert_latte_success(&result);
+    assert_no_errors(&result);
+    assert_has_throughput_metrics(&result);
+    // The run report must show both options as they were given.
+    assert_eq!(
+        report_setting(&result, "Shard-aware port range"),
+        "1024..65535"
+    );
+    assert_eq!(report_setting(&result, "TCP SO_REUSEADDR"), "true");
 }
 
 /// Covers the rows number validation of the 'execute_prepared_with_validation'

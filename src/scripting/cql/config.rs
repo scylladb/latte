@@ -1,8 +1,11 @@
 use clap::builder::PossibleValue;
 use clap::{Parser, ValueEnum};
+use scylla::routing::ShardAwarePortRange;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Parser, Debug, Serialize, Deserialize)]
 pub struct DbConnectionConf {
@@ -57,6 +60,62 @@ pub struct DbConnectionConf {
         default_value = "LOCAL_SERIAL"
     )]
     pub serial_consistency: SerialConsistency,
+
+    /// Local port range for shard-aware connections, e.g. 1024..65535 (default: 49152..65535)
+    #[clap(long("shard-aware-port-range"), value_name = "LO..HI")]
+    pub shard_aware_port_range: Option<PortRange>,
+
+    /// Set SO_REUSEADDR on connection sockets
+    #[serde(default)]
+    #[clap(long("tcp-reuse-address"))]
+    pub tcp_reuse_address: bool,
+}
+
+/// Inclusive local port range, written as `LO..HI`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortRange {
+    pub start: u16,
+    pub end: u16,
+}
+
+impl PortRange {
+    const ALLOWED: &'static str = "expected 'LO..HI' with 1024 <= LO <= HI <= 65535";
+
+    pub fn driver_range(&self) -> Result<ShardAwarePortRange, String> {
+        ShardAwarePortRange::new(self.start..=self.end).map_err(|e| {
+            format!(
+                "Invalid shard-aware port range '{self}': {e}, {}",
+                Self::ALLOWED
+            )
+        })
+    }
+}
+
+impl Display for PortRange {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}..{}", self.start, self.end)
+    }
+}
+
+impl FromStr for PortRange {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (start, end) = s
+            .split_once("..")
+            .ok_or_else(|| format!("Invalid port range '{s}', {}", Self::ALLOWED))?;
+        let start: u16 = start
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid start port '{start}' in '{s}', {}", Self::ALLOWED))?;
+        let end: u16 = end
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid end port '{end}' in '{s}', {}", Self::ALLOWED))?;
+        let range = PortRange { start, end };
+        range.driver_range()?;
+        Ok(range)
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -220,5 +279,59 @@ mod tests {
         let conf: DbConnectionConf = serde_json::from_str(json).unwrap();
         // serde(skip) means the field is always defaulted, even if present in input
         assert_eq!(conf.password, "");
+    }
+
+    #[test]
+    fn deserialize_without_port_range_fields() {
+        // Reports written before the options existed have neither field.
+        let json = r#"{
+            "count": 1,
+            "user": "",
+            "ssl": false,
+            "ssl_peer_verification": false,
+            "consistency": "LocalQuorum",
+            "serial_consistency": "LocalSerial"
+        }"#;
+        let conf: DbConnectionConf = serde_json::from_str(json).unwrap();
+        assert_eq!(conf.shard_aware_port_range, None);
+        assert!(!conf.tcp_reuse_address);
+    }
+
+    #[test]
+    fn port_range_parses_inclusive_bounds() {
+        let range: PortRange = "1024..65535".parse().unwrap();
+        assert_eq!(
+            PortRange {
+                start: 1024,
+                end: 65535
+            },
+            range
+        );
+        assert_eq!("1024..65535", range.to_string());
+        assert_eq!(
+            format!("{:?}", range.driver_range().unwrap()),
+            format!("{:?}", ShardAwarePortRange::new(1024..=65535).unwrap())
+        );
+    }
+
+    #[test]
+    fn port_range_rejects_bad_input() {
+        // Below the driver's 1024 floor, empty, wrong separator, out of u16, missing end.
+        for bad in [
+            "100..200",
+            "65535..1024",
+            "1024-65535",
+            "1024..70000",
+            "1024",
+            "",
+        ] {
+            let err = bad
+                .parse::<PortRange>()
+                .expect_err(&format!("expected {bad:?} to be rejected"));
+            assert!(
+                err.contains("1024 <= LO <= HI <= 65535"),
+                "error for {bad:?} does not state the allowed range: {err}"
+            );
+        }
     }
 }
