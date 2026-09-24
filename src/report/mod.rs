@@ -617,6 +617,19 @@ impl Display for RunConfigCmp<'_> {
             self.line("Connections", "", |conf| {
                 Quantity::from(conf.connection.db.count)
             }),
+            #[cfg(feature = "cql")]
+            self.line("Shard-aware port range", "", |conf| {
+                OptionDisplay(
+                    conf.connection
+                        .db
+                        .shard_aware_port_range
+                        .map(|range| range.to_string()),
+                )
+            }),
+            #[cfg(feature = "cql")]
+            self.line("TCP SO_REUSEADDR", "", |conf| {
+                conf.connection.db.tcp_reuse_address.to_string()
+            }),
             self.line("Concurrency", "req", |conf| {
                 Quantity::from(conf.concurrency)
             }),

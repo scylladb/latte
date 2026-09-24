@@ -67,7 +67,7 @@ pub async fn connect(conf: &ConnectionConf, client_id: &str) -> Result<Context, 
         .request_timeout(Some(conf.request_timeout))
         .build();
 
-    let scylla_session = SessionBuilder::new()
+    let mut session_builder = SessionBuilder::new()
         .known_nodes(&conf.addresses)
         .pool_size(PoolSize::PerShard(conf.db.count))
         .user(&conf.db.user, &conf.db.password)
@@ -81,7 +81,17 @@ pub async fn connect(conf: &ConnectionConf, client_id: &str) -> Result<Context, 
                 .with_application_version(get_version_info().latte_version)
                 .with_client_id(client_id.to_string()),
         )
-        .default_execution_profile_handle(profile.into_handle())
+        .default_execution_profile_handle(profile.into_handle());
+    if let Some(range) = &conf.db.shard_aware_port_range {
+        let range = range
+            .driver_range()
+            .map_err(|e| CassError(CassErrorKind::Error(e)))?;
+        session_builder = session_builder.shard_aware_local_port_range(range);
+    }
+    if conf.db.tcp_reuse_address {
+        session_builder = session_builder.tcp_reuse_address(true);
+    }
+    let scylla_session = session_builder
         .build()
         .await
         .map_err(|e| CassError(CassErrorKind::FailedToConnect(conf.addresses.clone(), e)))?;
