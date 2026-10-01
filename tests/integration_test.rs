@@ -188,6 +188,23 @@ impl LatteVariant {
         result
     }
 
+    /// Unlike `run`, the `load` command takes no cycle count - it uses the one
+    /// the workload's `prepare` function puts on the context.
+    fn load(&self, db: &ScyllaDb, workload: &str, extra_args: &[&str]) -> CommandResult {
+        self.ensure_built();
+
+        let mut cmd = Command::new(self.binary_path());
+        cmd.args(["load", workload, &self.endpoint_arg(db)])
+            .args(extra_args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+
+        println!("Running '{:?}'", cmd);
+        let result = run_command(cmd);
+
+        eprintln!("'{} load' output:\n{}", self.binary_name(), result.output);
+        result
+    }
+
     fn run(
         &self,
         db: &ScyllaDb,
@@ -476,6 +493,35 @@ async fn test_latte_cql_binary_file_workload() {
         get_result.output
     );
     assert_has_throughput_metrics(&get_result);
+}
+
+/// The `load` command gets its cycle count from `ctx.load_cycle_count`, which
+/// the workload's `prepare` function assigns inside the Rune VM. Regression
+/// test for https://github.com/scylladb/latte/issues/224, where that write
+/// stayed in the VM, so `load` ran zero cycles, wrote nothing and still exited
+/// successfully.
+#[tokio::test]
+#[ignore]
+async fn test_latte_cql_load_command() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("integration_tests/load_cycle_count.rn");
+    let row_count = "-P=row_count=1000";
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema");
+    latte.schema(&db, &workload, &[row_count]);
+
+    println!("\n[TEST-INFO] Phase 2: Load the rows");
+    let load_result = latte.load(&db, &workload, &[row_count, "-q"]);
+    assert_latte_success(&load_result);
+
+    // A zero cycle count is exactly the failure mode of #224, and it is silent:
+    // the command exits successfully having written nothing.
+    println!("\n[TEST-INFO] Phase 3: All the rows must have been written");
+    let validation_result = latte.run(&db, &workload, "1", &[row_count, "-f=validate_count"]);
+    assert_latte_success(&validation_result);
+    assert_no_errors(&validation_result);
 }
 
 #[tokio::test]

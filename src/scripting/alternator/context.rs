@@ -8,6 +8,7 @@ use alternator_driver::AlternatorClient as Client;
 use rune::runtime::Object;
 use rune::{Any, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use try_lock::TryLock;
@@ -24,8 +25,13 @@ pub struct Context {
     pub retry_interval: RetryInterval,
     pub validation_strategy: ValidationStrategy,
     pub partition_row_presets: Arc<TryLock<HashMap<String, RowDistributionPreset>>>,
-    #[rune(get, set, add_assign, copy)]
-    pub load_cycle_count: u64,
+    /// Number of cycles the `load` command runs, set by the script's `prepare`
+    /// function. Shared - not copied - by [`Context::shallow_clone`], so that a
+    /// write made inside the Rune VM reaches the `Context` the caller reads it
+    /// back from. Its Rune-visible `get`/`set`/`add_assign` accessors are
+    /// registered by hand in `scripting::init_context_module`, because
+    /// `#[rune(get, set)]` cannot be derived for a shared field.
+    load_cycle_count: Arc<AtomicU64>,
     /// True on per-worker deep copies made by [`Context::clone`].
     /// Run-level state written through such a copy (report metadata, metric
     /// orientations) is never merged back, so the scripting API rejects those calls.
@@ -67,13 +73,27 @@ impl Context {
             retry_interval,
             validation_strategy,
             partition_row_presets: Arc::new(TryLock::new(HashMap::new())),
-            load_cycle_count: 0,
+            load_cycle_count: Arc::new(AtomicU64::new(0)),
             is_worker_clone: false,
             in_prepare_worker: false,
             worker_id: 0,
             worker_count: 1,
             data: Value::new(Object::new()).unwrap(),
         }
+    }
+
+    /// Number of cycles the `load` command should run, as set by the script's
+    /// `prepare` function through `ctx.load_cycle_count = ...`.
+    pub fn load_cycle_count(&self) -> u64 {
+        self.load_cycle_count.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_load_cycle_count(&mut self, value: u64) {
+        self.load_cycle_count.store(value, Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_assign_load_cycle_count(&mut self, value: u64) {
+        self.load_cycle_count.fetch_add(value, Ordering::Relaxed);
     }
 
     pub fn clone(&self) -> Result<Self, LatteError> {
@@ -97,7 +117,7 @@ impl Context {
             partition_row_presets: Arc::new(TryLock::new(
                 self.partition_row_presets.try_lock().unwrap().clone(),
             )),
-            load_cycle_count: self.load_cycle_count,
+            load_cycle_count: Arc::new(AtomicU64::new(self.load_cycle_count())),
             is_worker_clone: true,
             in_prepare_worker: false,
             worker_id: self.worker_id,
@@ -120,7 +140,7 @@ impl Context {
             retry_interval: self.retry_interval,
             validation_strategy: self.validation_strategy,
             partition_row_presets: Arc::clone(&self.partition_row_presets),
-            load_cycle_count: self.load_cycle_count,
+            load_cycle_count: Arc::clone(&self.load_cycle_count),
             is_worker_clone: self.is_worker_clone,
             in_prepare_worker: self.in_prepare_worker,
             worker_id: self.worker_id,

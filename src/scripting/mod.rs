@@ -1,3 +1,4 @@
+use rune::runtime::Protocol;
 use rune::{ContextError, Module};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
@@ -135,6 +136,29 @@ fn init_context_module() -> Result<Module, ContextError> {
     let mut context_module = Module::default();
 
     context_module.ty::<context::Context>()?;
+
+    // `load_cycle_count` is the only script-writable field whose value has to
+    // travel back out of the VM: `latte load` reads it after calling `prepare`.
+    // It is therefore stored behind a shared `Arc<AtomicU64>` and accessed
+    // through these hand-written protocol functions, since `#[rune(get, set)]`
+    // can only be derived for a plain, copied field - and a copied field is
+    // invisible to the caller, as the VM gets `Context::shallow_clone`.
+    context_module.field_function(
+        &Protocol::GET,
+        "load_cycle_count",
+        context::Context::load_cycle_count,
+    )?;
+    context_module.field_function(
+        &Protocol::SET,
+        "load_cycle_count",
+        context::Context::set_load_cycle_count,
+    )?;
+    context_module.field_function(
+        &Protocol::ADD_ASSIGN,
+        "load_cycle_count",
+        context::Context::add_assign_load_cycle_count,
+    )?;
+
     context_module.function_meta(functions_common::signal_failure)?;
     context_module.function_meta(functions_common::elapsed_secs)?;
     context_module.function_meta(functions_common::set_report_field)?;

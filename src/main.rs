@@ -166,7 +166,7 @@ async fn load(conf: LoadCommand) -> Result<()> {
         }
     }
 
-    let load_count = session.load_cycle_count;
+    let load_count = session.load_cycle_count();
     if load_count > 0 && !program.has_load() {
         eprintln!("error: Function `load` not found in the workload script.");
         exit(255);
