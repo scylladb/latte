@@ -1,0 +1,69 @@
+// Regression coverage for the 'latte load' command.
+//
+// The number of cycles the 'load' command runs is not a CLI option:
+// the workload's 'prepare' function sets it on the context,
+// from inside the Rune VM, and the command reads it back out.
+// This script exercises that path and then lets a separate 'run' validate
+// that every row really got written.
+// Ref: https://github.com/scylladb/latte/issues/224
+//
+// USAGE:
+// 1) Create schema:
+// $ latte schema workloads/integration_tests/load_cycle_count.rn 172.17.0.2
+//
+// 2) Load the rows:
+// $ latte load workloads/integration_tests/load_cycle_count.rn -q \
+//     -P row_count=1000 -- 172.17.0.2
+//
+// 3) Check that all of them are there:
+// $ latte run workloads/integration_tests/load_cycle_count.rn -q \
+//     -d 1 -P row_count=1000 -f validate_count -- 172.17.0.2
+
+use latte::*;
+
+const ROW_COUNT = latte::param!("row_count", 1000);
+
+const KEYSPACE = "ks_load_cycle_count";
+const TABLE = "t_load_cycle_count";
+
+const P_STMT = #{
+    "INSERT": #{
+        "NAME": "p_stmt_load_cycle_count__insert",
+        "CQL": `INSERT INTO ${KEYSPACE}.${TABLE}(pk) VALUES (:pk)`,
+    },
+    "COUNT": #{
+        "NAME": "p_stmt_load_cycle_count__count",
+        "CQL": `SELECT COUNT(*) FROM ${KEYSPACE}.${TABLE}`,
+    },
+};
+
+pub async fn schema(db) {
+    db.execute(`CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
+        WITH REPLICATION = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}
+    `).await?;
+    db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE}(pk bigint PRIMARY KEY)`).await?;
+}
+
+pub async fn erase(db) {
+    db.execute(`TRUNCATE TABLE ${KEYSPACE}.${TABLE}`).await?
+}
+
+pub async fn prepare(db) {
+    // NOTE: split in two on purpose - the 'load' command must see the result
+    //       of both the 'set' and the 'add_assign' context field protocols.
+    db.load_cycle_count = ROW_COUNT - 1;
+    db.load_cycle_count += 1;
+    db.prepare(P_STMT.INSERT.NAME, P_STMT.INSERT.CQL).await?;
+    db.prepare(P_STMT.COUNT.NAME, P_STMT.COUNT.CQL).await?;
+}
+
+pub async fn load(db, i) {
+    db.execute_prepared(P_STMT.INSERT.NAME, [i]).await?
+}
+
+pub async fn validate_count(db, i) {
+    let custom_err = `expected the 'load' command to write ${ROW_COUNT} row(s)`;
+    db.execute_prepared_with_validation(
+        P_STMT.COUNT.NAME, [], [ROW_COUNT, ROW_COUNT, custom_err],
+    ).await?
+}
