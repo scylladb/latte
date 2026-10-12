@@ -551,6 +551,91 @@ async fn test_latte_cql_data_validation_workload() {
     assert_has_throughput_metrics(&data_validation_result);
 }
 
+/// Query error messages must show the actual query parameter values. They are
+/// built while native async functions are polled, where the Rune VM environment
+/// is not set, so formatting the values with Rune's `Debug` impl used to print
+/// "<... object at 0x...: Missing interface environment>" for every non-scalar one.
+/// The server rejects a non-conditional write at the SERIAL consistency level only
+/// at execution time, which makes the error message carry all the insert params.
+#[tokio::test]
+#[ignore]
+async fn test_latte_cql_query_error_shows_params() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("data_validation.rn");
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    let extra_args: &[&str] = match db._container {
+        Some(_) => &["-P", "replication_factor=1"], // Running in a single container
+        None => &[],
+    };
+    latte.schema(&db, &workload, extra_args);
+
+    println!("\n[TEST-INFO] Phase 2: Run an insert the server rejects");
+    let result = latte.run(
+        &db,
+        &workload,
+        "1",
+        &[
+            "-f=insert",
+            "--consistency=SERIAL",
+            "--retry-number=1",
+            "--retry-interval=10ms",
+        ],
+    );
+    // A failed query which is not an overload error stops the run
+    assert!(
+        !result.status.success(),
+        "the insert was expected to fail:\n{}",
+        result.output
+    );
+    assert!(
+        result.output.contains("Failed to execute query")
+            && result
+                .output
+                .contains("You must use conditional updates for serializable writes"),
+        "no expected query execution error in latte output:\n{}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("Missing interface environment"),
+        "query params were not formatted:\n{}",
+        result.output
+    );
+    // The 'col_duration' string value the workload generates for the first cycle
+    assert!(
+        result.output.contains("\"2y3mo2w6d23h59m\""),
+        "no string query param value in latte output:\n{}",
+        result.output
+    );
+}
+
+/// Item conversion error messages must show the offending rune values. The conversion
+/// runs while the 'put' native async function is polled, where the Rune VM environment
+/// is not set. The workload panics, failing the run, if an error message misses the value.
+#[tokio::test]
+#[ignore]
+async fn test_latte_alternator_conversion_errors_workload() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Alternator;
+    let workload = workload_path("integration_tests/conversion_errors_alternator.rn");
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    latte.schema(&db, &workload, &[]);
+
+    println!("\n[TEST-INFO] Phase 2: Put the items which fail the conversion");
+    let result = latte.run(&db, &workload, "100", &[]);
+    assert_latte_success(&result);
+    assert_no_errors(&result);
+    assert!(
+        !result.output.contains("Missing interface environment"),
+        "rune values were not formatted:\n{}",
+        result.output
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_latte_alternator_type_validation_workload() {

@@ -1,0 +1,44 @@
+//! Checks that the item conversion errors show the offending rune values.
+//!
+//! The conversion runs while the 'put' native async function is polled, where the
+//! Rune VM environment is not set. Formatting the values with Rune's own 'Debug' impl
+//! used to give "<... object at 0x...: Missing interface environment>" there.
+
+use latte::*;
+
+const TABLE = latte::param!("table", "conversion_errors");
+
+pub async fn schema(db) {
+    // Drop the table (ignoring errors if it doesn't exist) to ensure we always have the up-to-date schema.
+    db.delete_table(TABLE).await;
+    db.create_table(TABLE, "pk").await?;
+}
+
+// Puts the item expecting its conversion to fail with an error message containing 'expected'
+async fn assert_conversion_error(db, item, expected) {
+    match db.put(TABLE, item, ()).await {
+        Ok(_) => panic(`Expected a conversion error containing '${expected}', but got Ok`),
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            if !err_msg.contains(expected) {
+                panic(`Expected the error message to contain '${expected}', but got: '${err_msg}'`);
+            }
+        }
+    }
+}
+
+pub async fn run(db, i) {
+    let pk = `${i}`;
+    // A string element in a number set
+    assert_conversion_error(
+        db,
+        #{ pk: pk, numbers: #{ __nset: ["abc"] } },
+        `Invalid element type found in set __nset: "abc"`,
+    ).await;
+    // Tuples have no DynamoDB attribute counterpart
+    assert_conversion_error(
+        db,
+        #{ pk: pk, pair: ("a", 1) },
+        `Unsupported Rune Value type for: ("a", 1)`,
+    ).await;
+}

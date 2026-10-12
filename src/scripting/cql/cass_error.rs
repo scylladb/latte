@@ -1,3 +1,4 @@
+use crate::scripting::rune_fmt::fmt_rune_value;
 use openssl::error::ErrorStack;
 use rune::alloc::error::Error as RuneAllocError;
 use rune::alloc::fmt::TryWrite;
@@ -284,18 +285,18 @@ fn rune_value_to_param_strings(value: Option<&Value>) -> Vec<String> {
         return vec![];
     };
     if let Ok(tuple) = v.borrow_ref::<rune::runtime::OwnedTuple>() {
-        return tuple.iter().map(|v| format!("{v:?}")).collect();
+        return tuple.iter().map(fmt_rune_value).collect();
     }
     if let Ok(vec) = v.borrow_ref::<rune::runtime::Vec>() {
-        return vec.iter().map(|v| format!("{v:?}")).collect();
+        return vec.iter().map(fmt_rune_value).collect();
     }
     if let Ok(obj) = v.borrow_ref::<rune::runtime::Object>() {
-        return obj.iter().map(|(k, v)| format!("{k}: {v:?}")).collect();
+        return obj
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", fmt_rune_value(v)))
+            .collect();
     }
-    if let Ok(rune::runtime::TypeValue::Struct(s)) = v.as_type_value() {
-        return vec![format!("{s:?}")];
-    }
-    vec![format!("{v:?}")]
+    vec![fmt_rune_value(v)]
 }
 
 impl Display for QueryInfo {
@@ -311,3 +312,58 @@ impl Display for QueryInfo {
 
 pub type DbError = CassError;
 pub type DbErrorKind = CassErrorKind;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rune::alloc::String as RuneString;
+    use rune::runtime::{Object, Vec as RuneVec};
+
+    // Unit tests run with no rune VM environment set up, the same as code polled
+    // from within native async functions, which is where the error messages are built.
+
+    fn rune_string(s: &str) -> Value {
+        Value::new(RuneString::try_from(s).unwrap()).unwrap()
+    }
+
+    fn rune_vec(items: Vec<Value>) -> Value {
+        let mut v = RuneVec::new();
+        for item in items {
+            v.push(item).unwrap();
+        }
+        Value::vec(v.into_inner()).unwrap()
+    }
+
+    fn rune_object(pairs: Vec<(&str, Value)>) -> Value {
+        let mut obj = Object::new();
+        for (k, v) in pairs {
+            obj.insert(RuneString::try_from(k).unwrap(), v).unwrap();
+        }
+        Value::new(obj).unwrap()
+    }
+
+    #[test]
+    fn test_query_validation_error_shows_params() {
+        let params = rune_vec(vec![Value::from(5i64), rune_string("hello")]);
+        let err = CassError::query_validation_error(
+            "INSERT INTO t (id, val) VALUES (?, ?)",
+            Some(&params),
+            1,
+            1,
+            0,
+            String::new(),
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("with params [5, \"hello\"]"), "got: {msg}");
+        assert!(!msg.contains("Missing interface environment"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_param_strings_of_object() {
+        let params = rune_object(vec![("id", Value::from(1i64)), ("val", rune_string("x"))]);
+        let mut strings = rune_value_to_param_strings(Some(&params));
+        strings.sort();
+        assert_eq!(strings, vec!["id: 1", "val: \"x\""]);
+    }
+}

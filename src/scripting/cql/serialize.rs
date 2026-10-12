@@ -1,6 +1,7 @@
 //! Functions for binding rune values to CQL parameters
 
 use super::cass_error::{CassError, CassErrorKind};
+use crate::scripting::rune_fmt::fmt_rune_value;
 use crate::scripting::rune_uuid::Uuid;
 use chrono::{NaiveDate, NaiveTime};
 use once_cell::sync::Lazy;
@@ -219,7 +220,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
             ColumnType::Native(NativeType::Date) => match i.try_into() {
                 Ok(date) => Ok(Some(CqlValue::Date(CqlDate(date)))),
                 Err(_) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
+                    fmt_rune_value(v),
                     "NativeType::Date".to_string(),
                     Some("Invalid date value".to_string()),
                 )))),
@@ -263,7 +264,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                 let naive_date =
                     NaiveDate::parse_from_str(s.as_str(), "%Y-%m-%d").map_err(|e| {
                         CassError(CassErrorKind::QueryParamConversion(
-                            format!("{v:?}"),
+                            fmt_rune_value(v),
                             "NativeType::Date".to_string(),
                             Some(format!("{e}")),
                         ))
@@ -278,7 +279,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                 let naive_time =
                     NaiveTime::parse_from_str(s.as_str(), &time_format).map_err(|e| {
                         Box::new(CassError(CassErrorKind::QueryParamConversion(
-                            format!("{v:?}"),
+                            fmt_rune_value(v),
                             "NativeType::Time".to_string(),
                             Some(format!("{e}")),
                         )))
@@ -293,7 +294,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                 let duration_str = s.as_str();
                 if duration_str.is_empty() {
                     return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                        format!("{v:?}"),
+                        fmt_rune_value(v),
                         "NativeType::Duration".to_string(),
                         Some("Duration cannot be empty".to_string()),
                     ))));
@@ -347,7 +348,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                         *matches_counter.entry("ns").or_insert(1) += 1;
                     } else if cap.name("invalid").is_some() {
                         return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                            format!("{v:?}"),
+                            fmt_rune_value(v),
                             "NativeType::Duration".to_string(),
                             Some("Got invalid duration value".to_string()),
                         ))));
@@ -355,7 +356,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                 }
                 if matches_counter.values().all(|&v| v == 0) {
                     return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                        format!("{v:?}"),
+                        fmt_rune_value(v),
                         "NativeType::Duration".to_string(),
                         Some("None time units were found".to_string()),
                     ))));
@@ -367,7 +368,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                     .collect();
                 if !duplicated_units.is_empty() {
                     return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                        format!("{v:?}"),
+                        fmt_rune_value(v),
                         "NativeType::Duration".to_string(),
                         Some(format!(
                             "Got multiple matches for time unit(s): {}",
@@ -384,7 +385,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
             ColumnType::Native(NativeType::Varint) => {
                 if !s.as_str().chars().all(|c| c.is_ascii_digit()) {
                     return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                        format!("{v:?}"),
+                        fmt_rune_value(v),
                         "NativeType::Varint".to_string(),
                         Some("Input contains non-digit characters".to_string()),
                     ))));
@@ -401,7 +402,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
             ColumnType::Native(NativeType::Timeuuid) => match CqlTimeuuid::from_str(s.as_str()) {
                 Ok(timeuuid) => Ok(Some(CqlValue::Timeuuid(timeuuid))),
                 Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
+                    fmt_rune_value(v),
                     "NativeType::Timeuuid".to_string(),
                     Some(format!("{e}")),
                 )))),
@@ -412,7 +413,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
             ColumnType::Native(NativeType::Inet) => match IpAddr::from_str(s.as_str()) {
                 Ok(ipaddr) => Ok(Some(CqlValue::Inet(ipaddr))),
                 Err(e) => Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                    format!("{v:?}"),
+                    fmt_rune_value(v),
                     "NativeType::Inet".to_string(),
                     Some(format!("{e}")),
                 )))),
@@ -487,7 +488,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                         to_scylla_value(v, elem_typ).and_then(|opt| {
                             opt.ok_or_else(|| {
                                 Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                    format!("{v:?}"),
+                                    fmt_rune_value(v),
                                     "ColumnType::Vector".to_string(),
                                     None,
                                 )))
@@ -507,7 +508,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                         to_scylla_value(v, elt).and_then(|opt| {
                             opt.ok_or_else(|| {
                                 Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                    format!("{v:?}"),
+                                    fmt_rune_value(v),
                                     "CollectionType::List".to_string(),
                                     None,
                                 )))
@@ -527,7 +528,7 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                         to_scylla_value(v, elt).and_then(|opt| {
                             opt.ok_or_else(|| {
                                 Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                    format!("{v:?}"),
+                                    fmt_rune_value(v),
                                     "CollectionType::Set".to_string(),
                                     None,
                                 )))
@@ -550,14 +551,14 @@ fn to_scylla_value(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<
                             map_vec.push((key, value));
                         } else {
                             return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                                format!("{item:?}"),
+                                fmt_rune_value(item),
                                 "CollectionType::Map".to_string(),
                                 None,
                             ))));
                         }
                     } else {
                         return Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-                            format!("{item:?}"),
+                            fmt_rune_value(item),
                             "CollectionType::Map".to_string(),
                             None,
                         ))));
@@ -670,7 +671,7 @@ fn check_packed_float_len(
 
 fn type_mismatch(v: &Value, typ: &ColumnType) -> Result<Option<CqlValue>, Box<CassError>> {
     Err(Box::new(CassError(CassErrorKind::QueryParamConversion(
-        format!("{v:?}"),
+        fmt_rune_value(v),
         format!("{typ:?}").to_string(),
         None,
     ))))
@@ -964,7 +965,8 @@ mod tests {
     #[test]
     fn test_to_scylla_value_type_mismatch() {
         let result = to_scylla_value(&rune_string("hello"), &ColumnType::Native(NativeType::Int));
-        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Cannot convert value \"hello\""), "got: {msg}");
     }
 
     // ── to_scylla_value tests (blob) ────────────────────────────────
