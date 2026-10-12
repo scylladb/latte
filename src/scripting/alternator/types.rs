@@ -1,4 +1,5 @@
 use super::alternator_error::{AlternatorError, AlternatorErrorKind};
+use crate::scripting::rune_fmt::fmt_rune_value;
 use aws_sdk_dynamodb::types::AttributeValue;
 use rune::alloc::String as RuneString;
 use rune::runtime::{Bytes, Object};
@@ -61,8 +62,9 @@ where
             .map(|item| {
                 rune_unwrapper(rune_value_to_alternator_attribute(item.clone())?).ok_or_else(|| {
                     AlternatorError::new(AlternatorErrorKind::ConversionError(format!(
-                        "Invalid element type found in set {}: {:?}",
-                        key, item
+                        "Invalid element type found in set {}: {}",
+                        key,
+                        fmt_rune_value(item)
                     )))
                 })
             })
@@ -147,7 +149,7 @@ pub fn rune_value_to_alternator_attribute(v: Value) -> Result<AttributeValue, Al
         };
     }
     Err(AlternatorError::new(AlternatorErrorKind::ConversionError(
-        format!("Unsupported Rune Value type for: {:?}", v),
+        format!("Unsupported Rune Value type for: {}", fmt_rune_value(&v)),
     )))
 }
 
@@ -249,4 +251,55 @@ pub fn hashmap_to_rune_object(map: HashMap<String, Value>) -> Result<Value, Alte
     }
     Value::new(obj)
         .map_err(|e| AlternatorError::new(AlternatorErrorKind::ConversionError(e.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rune::runtime::OwnedTuple;
+
+    // Unit tests run with no rune VM environment set up, the same as code polled
+    // from within native async functions, which is where the conversion errors are built.
+
+    fn rune_string(s: &str) -> Value {
+        Value::new(RuneString::try_from(s).unwrap()).unwrap()
+    }
+
+    fn conversion_error(v: Value) -> String {
+        match rune_value_to_alternator_attribute(v) {
+            Ok(attr) => panic!("expected a conversion error, got {attr:?}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_invalid_set_element_error_shows_value() {
+        let mut elements = rune::runtime::Vec::new();
+        elements.push(rune_string("abc")).unwrap();
+        let mut obj = Object::new();
+        obj.insert(
+            RuneString::try_from(NSET_KEY).unwrap(),
+            Value::vec(elements.into_inner()).unwrap(),
+        )
+        .unwrap();
+        let msg = conversion_error(Value::new(obj).unwrap());
+        assert!(
+            msg.contains("Invalid element type found in set __nset: \"abc\""),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_unsupported_value_error_shows_value() {
+        let mut items = rune::alloc::vec::Vec::new();
+        items.try_push(rune_string("a")).unwrap();
+        items.try_push(Value::from(1i64)).unwrap();
+        let tuple = Value::new(OwnedTuple::try_from(items).unwrap()).unwrap();
+        let msg = conversion_error(tuple);
+        assert!(
+            msg.contains("Unsupported Rune Value type for: (\"a\", 1)"),
+            "got: {msg}"
+        );
+    }
 }

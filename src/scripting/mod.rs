@@ -8,6 +8,7 @@ pub mod cluster_info;
 mod functions_common;
 pub mod retry_error;
 mod row_distribution;
+pub mod rune_fmt;
 pub mod rune_uuid;
 mod split_lines_iter;
 
