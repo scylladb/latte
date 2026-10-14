@@ -3,7 +3,7 @@
 **Benchmarks DynamoDB-compatible APIs (Amazon DynamoDB, ScyllaDB Alternator) using the same engine as CQL-based Latte**
 
 Latte ships a dedicated `latte-alternator` binary that speaks the DynamoDB protocol instead of CQL.
-It uses the dedicated ScyllaDB alternator-driver under the hood and supports all the same execution
+It uses the dedicated ScyllaDB alternator-client under the hood and supports all the same execution
 features (async engine, rate/concurrency limiting, HDR histograms, reports, comparisons, etc.), plus
 extra driver tuning options (datacenter/rack-aware routing, request compression, header optimization,
 node-refresh intervals and partition-key route affinity — see [Driver tuning](#driver-tuning)).
@@ -12,7 +12,7 @@ node-refresh intervals and partition-key route affinity — see [Driver tuning](
 
 ### From source
 
-1. [Install Rust toolchain](https://rustup.rs/)
+1. [Install Rust toolchain](https://rustup.rs/) (1.94.1 or newer)
 2. Build the alternator binary:
 
 ```shell
@@ -58,7 +58,7 @@ export AWS_DEFAULT_REGION=us-east-1
 ### Driver tuning
 
 `latte-alternator` accepts a set of additional options that tune the underlying ScyllaDB
-alternator-driver. Unless noted otherwise, omitting an option leaves the driver default in place.
+alternator-client. Unless noted otherwise, omitting an option leaves the driver default in place.
 
 #### Routing and load balancing
 

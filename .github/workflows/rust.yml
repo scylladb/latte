@@ -63,3 +63,4 @@ jobs:
       - run: cargo clippy -- -D warnings
       - run: RUSTFLAGS="--cfg tokio_unstable --cfg fetch_extended_version_info" cargo clippy -- -D warnings
       - run: cargo clippy --no-default-features --features alternator -- -D warnings
+      - run: RUSTFLAGS="--cfg tokio_unstable --cfg fetch_extended_version_info" cargo clippy --no-default-features --features alternator -- -D warnings

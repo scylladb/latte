@@ -35,11 +35,11 @@ pub fn parse_compression_level(s: &str) -> Result<u8, String> {
     }
 }
 
-/// HTTP request body compression mode for the alternator-driver client.
+/// HTTP request body compression mode for the Alternator client.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum AlternatorRequestCompressionMode {
-    /// Use alternator-driver defaults.
+    /// Use alternator-client defaults.
     #[default]
     DriverDefault,
     Off,
@@ -47,7 +47,7 @@ pub enum AlternatorRequestCompressionMode {
     Zlib,
 }
 
-/// Alternator write isolation mode for partition-key affinity routing for the alternator-driver client.
+/// Alternator write isolation mode for partition-key affinity routing for the Alternator client.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum AlternatorKeyRouteAffinity {
@@ -59,7 +59,7 @@ pub enum AlternatorKeyRouteAffinity {
 
 const DEFAULT_COMPRESSION_THRESHOLD: usize = 1024;
 
-/// Alternator-driver connection options.
+/// Alternator client connection options.
 #[derive(Parser, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AlternatorConnectionOpts {

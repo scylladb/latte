@@ -69,9 +69,9 @@ try-lock = "0.2.3"
 url = { version = "2.5", optional = true }
 uuid = { version = "1.1", features = ["v4"] }
 walkdir = "2"
-aws-sdk-dynamodb = { version = "1.111.0", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
+aws-sdk-dynamodb = { version = "1.124.0", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
 aws-config = { version = "1.8.16", optional = true }
-alternator-driver = { git = "https://github.com/scylladb/alternator-client-rust", rev = "0cf69a49232957d90a7c75c4ee101c37096f0b0a", optional = true }
+alternator-client = { version = "1.0.0", optional = true }
 
 [build-dependencies]
 reqwest = { version = "0.13", features = ["json", "blocking"] }
@@ -89,7 +89,7 @@ testcontainers = "0.27"
 [features]
 default = ["cql"]
 cql = ["scylla"]
-alternator = ["alternator-driver", "aws-sdk-dynamodb", "aws-config", "url"]
+alternator = ["alternator-client", "aws-sdk-dynamodb", "aws-config", "url"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
