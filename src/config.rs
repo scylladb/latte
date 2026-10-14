@@ -220,7 +220,7 @@ pub struct ConnectionConf {
     #[serde(flatten)]
     pub db: db_config::DbConnectionConf,
 
-    /// Alternator-driver tuning (request compression and header handling).
+    /// Alternator client tuning (request compression and header handling).
     #[cfg(feature = "alternator")]
     #[clap(flatten)]
     #[serde(flatten)]

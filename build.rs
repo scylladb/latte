@@ -11,9 +11,8 @@ const UNKNOWN: &str = "unknown";
 #[cfg(feature = "cql")]
 const DRIVER_PKG_NAME: &str = "scylla";
 #[cfg(feature = "alternator")]
-const DRIVER_PKG_NAME: &str = "alternator-driver";
+const DRIVER_PKG_NAME: &str = "alternator-client";
 
-#[cfg(feature = "cql")]
 #[cfg(fetch_extended_version_info)]
 mod driver_date_utils {
     use chrono::{DateTime, Utc};
@@ -21,6 +20,10 @@ mod driver_date_utils {
     use serde_json::Value;
 
     const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    #[cfg(feature = "cql")]
+    const DRIVER_REPOSITORY: &str = "scylla-rust-driver";
+    #[cfg(feature = "alternator")]
+    const DRIVER_REPOSITORY: &str = "alternator-client-rust";
 
     pub fn get_driver_commit_date_from_github(sha: &str) -> Option<String> {
         let client = Client::builder()
@@ -30,7 +33,7 @@ mod driver_date_utils {
             .ok()?;
         let resp = client
             .get(format!(
-                "https://api.github.com/repos/scylladb/scylla-rust-driver/commits/{sha}",
+                "https://api.github.com/repos/scylladb/{DRIVER_REPOSITORY}/commits/{sha}",
             ))
             .send()
             .ok()?;
@@ -110,8 +113,8 @@ mod driver_date_utils {
     }
 }
 
-// TODO: Add proper alternator version info parser when building with fetch_extended_version_info
 #[cfg(feature = "alternator")]
+#[cfg(not(fetch_extended_version_info))]
 mod driver_date_utils {
     const UNKNOWN_EXTENDED: &str = "unknown ";
 

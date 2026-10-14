@@ -27,7 +27,6 @@ pub async fn connect(conf: &ConnectionConf, _client_id: &str) -> Result<Context,
         .to_string();
 
     let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
-        .endpoint_url(&address)
         .retry_config(RetryConfig::standard().with_max_attempts(1))
         .timeout_config(
             aws_config::timeout::TimeoutConfig::builder()
