@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "latte-cli"
-version = "0.53.0-scylladb"
+version = "0.54.0-scylladb"
 dependencies = [
  "alternator-client",
  "anyhow",
