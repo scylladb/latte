@@ -304,7 +304,7 @@ impl RowDistributionPreset {
     /// the preset within a single batch. Inside a group the partitions are
     /// walked one by one before the next batch of each of them follows, so
     /// consecutive batches keep landing on different partitions.
-    pub async fn get_partition_batch(&self, idx: u64) -> (u64, Vec<u64>) {
+    pub fn get_partition_batch(&self, idx: u64) -> (u64, Vec<u64>) {
         assert!(
             self.batch_size > 0,
             "Batch size is not set for this preset, cannot proceed"
@@ -369,35 +369,22 @@ impl RowDistributionPreset {
 
     /// Returns partition index and number of expected rows in it
     /// based on the provided stress iteration index.
-    pub async fn get_partition_info(&self, idx: u64) -> (u64, u64) {
-        self._get_partition_info(
-            idx % self.total_rows,
-            0,
-            self.partition_groups.clone(),
-            self.row_distributions.clone(),
-        )
-        .await
+    pub fn get_partition_info(&self, idx: u64) -> (u64, u64) {
+        self._get_partition_info(idx % self.total_rows)
     }
 
-    async fn _get_partition_info(
-        &self,
-        mut idx: u64,
-        mut partn_offset: u64,
-        partition_groups: Vec<PartitionGroup>,
-        row_distributions: Vec<(RowDistribution, RowDistribution)>,
-    ) -> (u64, u64) {
-        if partition_groups.is_empty() {
+    fn _get_partition_info(&self, mut idx: u64) -> (u64, u64) {
+        if self.partition_groups.is_empty() {
             panic!("No partition groups found, cannot proceed");
         }
-        if row_distributions.is_empty() {
+        if self.row_distributions.is_empty() {
             panic!("No row_distributions found, cannot proceed");
         }
-        for (loop_i, current_partn) in partition_groups.into_iter().enumerate() {
+        let mut partn_offset: u64 = 0;
+        for (current_partn, (cycle_type_1, cycle_type_2)) in
+            self.partition_groups.iter().zip(&self.row_distributions)
+        {
             let current_partn_count = current_partn.n_partitions;
-
-            let current_row_distribution = row_distributions[loop_i].clone();
-            let cycle_type_1 = current_row_distribution.0;
-            let cycle_type_2 = current_row_distribution.1;
 
             let cycle_type_1_size = cycle_type_1.n_rows_for_left_and_right;
             let done_cycle_type_1_num: u64;
@@ -763,18 +750,13 @@ async fn _get_partition_info(
     preset_name: &str,
     idx: u64,
 ) -> Result<(u64, u64), DbError> {
-    let preset = ctx
-        .partition_row_presets
-        .try_lock()
-        .unwrap()
-        .get(preset_name)
-        .cloned()
-        .ok_or_else(|| {
-            DbError::new(DbErrorKind::PartitionRowPresetNotFound(
-                preset_name.to_string(),
-            ))
-        })?;
-    Ok(preset.get_partition_info(idx).await)
+    let presets = ctx.partition_row_presets.try_lock().unwrap();
+    let preset = presets.get(preset_name).ok_or_else(|| {
+        DbError::new(DbErrorKind::PartitionRowPresetNotFound(
+            preset_name.to_string(),
+        ))
+    })?;
+    Ok(preset.get_partition_info(idx))
 }
 
 /// Enables single-partition batches for a preset and reports the number of
@@ -813,24 +795,19 @@ async fn _get_partition_batch(
     preset_name: &str,
     idx: u64,
 ) -> Result<(u64, Vec<u64>), DbError> {
-    let preset = ctx
-        .partition_row_presets
-        .try_lock()
-        .unwrap()
-        .get(preset_name)
-        .cloned()
-        .ok_or_else(|| {
-            DbError::new(DbErrorKind::PartitionRowPresetNotFound(
-                preset_name.to_string(),
-            ))
-        })?;
+    let presets = ctx.partition_row_presets.try_lock().unwrap();
+    let preset = presets.get(preset_name).ok_or_else(|| {
+        DbError::new(DbErrorKind::PartitionRowPresetNotFound(
+            preset_name.to_string(),
+        ))
+    })?;
     if preset.batch_size < 1 {
         return Err(DbError::new(DbErrorKind::Error(format!(
             "get_partition_batch: batch size is not set for the '{preset_name}' preset. \
             Call 'set_partition_batch_size' in the 'prepare' function first."
         ))));
     }
-    Ok(preset.get_partition_batch(idx).await)
+    Ok(preset.get_partition_batch(idx))
 }
 
 /// Computes the greatest common divisor of 2 numbers, useful for rows distribution among DB partitions
@@ -995,24 +972,22 @@ mod tests {
     #[test]
     fn test_partition_batch_01_inverse_matches_get_partition_info() {
         for (name, preset) in batch_test_presets() {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let mut partn_offset: u64 = 0;
-                for (group_idx, partition_group) in preset.partition_groups.iter().enumerate() {
-                    for k in 0..partition_group.n_rows_per_group {
-                        let row_idx = preset.global_row_idx(group_idx, k);
-                        let (partition_idx, rows_num) = preset.get_partition_info(row_idx).await;
-                        assert_eq!(
-                            partn_offset + k % partition_group.n_partitions, partition_idx,
-                            "preset '{name}', group {group_idx}, rank {k} -> row {row_idx}",
-                        );
-                        assert_eq!(
-                            partition_group.n_rows_per_partition, rows_num,
-                            "preset '{name}', group {group_idx}, rank {k} -> row {row_idx}",
-                        );
-                    }
-                    partn_offset += partition_group.n_partitions;
+            let mut partn_offset: u64 = 0;
+            for (group_idx, partition_group) in preset.partition_groups.iter().enumerate() {
+                for k in 0..partition_group.n_rows_per_group {
+                    let row_idx = preset.global_row_idx(group_idx, k);
+                    let (partition_idx, rows_num) = preset.get_partition_info(row_idx);
+                    assert_eq!(
+                        partn_offset + k % partition_group.n_partitions, partition_idx,
+                        "preset '{name}', group {group_idx}, rank {k} -> row {row_idx}",
+                    );
+                    assert_eq!(
+                        partition_group.n_rows_per_partition, rows_num,
+                        "preset '{name}', group {group_idx}, rank {k} -> row {row_idx}",
+                    );
                 }
-            });
+                partn_offset += partition_group.n_partitions;
+            }
         }
     }
 
@@ -1027,20 +1002,18 @@ mod tests {
                 let total_batches = preset.total_batches;
                 let mut seen_rows: Vec<bool> = vec![false; preset.total_rows as usize];
                 let mut rows_per_partition: HashMap<u64, u64> = HashMap::new();
-                tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    for idx in 0..total_batches {
-                        let (partition_idx, rows) =
-                            preset.get_partition_batch(idx).await;
-                        for row in rows {
-                            assert!(
-                                !seen_rows[row as usize],
-                                "preset '{name}', batch_size {batch_size}: row {row} written twice",
-                            );
-                            seen_rows[row as usize] = true;
-                            *rows_per_partition.entry(partition_idx).or_insert(0) += 1;
-                        }
+                for idx in 0..total_batches {
+                    let (partition_idx, rows) =
+                        preset.get_partition_batch(idx);
+                    for row in rows {
+                        assert!(
+                            !seen_rows[row as usize],
+                            "preset '{name}', batch_size {batch_size}: row {row} written twice",
+                        );
+                        seen_rows[row as usize] = true;
+                        *rows_per_partition.entry(partition_idx).or_insert(0) += 1;
                     }
-                });
+                }
                 assert!(
                     seen_rows.iter().all(|seen| *seen),
                     "preset '{name}', batch_size {batch_size}: not all the rows were written",
@@ -1069,44 +1042,42 @@ mod tests {
                 let mut preset = preset.clone();
                 preset.set_batch_size(batch_size);
                 let total_batches = preset.total_batches;
-                tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    for idx in 0..total_batches {
-                        let (partition_idx, rows) =
-                            preset.get_partition_batch(idx).await;
-                        assert!(
-                            !rows.is_empty(),
-                            "preset '{name}', batch_size {batch_size}, batch {idx} is empty",
-                        );
-                        assert!(
-                            rows.len() as u64 <= batch_size,
-                            "preset '{name}', batch_size {batch_size}, batch {idx} is too long",
-                        );
-                        let mut deduplicated = rows.clone();
-                        deduplicated.sort_unstable();
-                        deduplicated.dedup();
+                for idx in 0..total_batches {
+                    let (partition_idx, rows) =
+                        preset.get_partition_batch(idx);
+                    assert!(
+                        !rows.is_empty(),
+                        "preset '{name}', batch_size {batch_size}, batch {idx} is empty",
+                    );
+                    assert!(
+                        rows.len() as u64 <= batch_size,
+                        "preset '{name}', batch_size {batch_size}, batch {idx} is too long",
+                    );
+                    let mut deduplicated = rows.clone();
+                    deduplicated.sort_unstable();
+                    deduplicated.dedup();
+                    assert_eq!(
+                        rows.len(), deduplicated.len(),
+                        "preset '{name}', batch_size {batch_size}, batch {idx} has duplicates",
+                    );
+                    for row in &rows {
+                        let (actual_partition_idx, rows_num) =
+                            preset.get_partition_info(*row);
                         assert_eq!(
-                            rows.len(), deduplicated.len(),
-                            "preset '{name}', batch_size {batch_size}, batch {idx} has duplicates",
+                            partition_idx, actual_partition_idx,
+                            "preset '{name}', batch_size {batch_size}, batch {idx}, row {row}",
                         );
-                        for row in &rows {
-                            let (actual_partition_idx, rows_num) =
-                                preset.get_partition_info(*row).await;
-                            assert_eq!(
-                                partition_idx, actual_partition_idx,
-                                "preset '{name}', batch_size {batch_size}, batch {idx}, row {row}",
+                        // A batch may only be shorter than requested when it
+                        // is the last one of its partition.
+                        if (rows.len() as u64) < batch_size {
+                            assert!(
+                                rows_num % batch_size == rows.len() as u64,
+                                "preset '{name}', batch_size {batch_size}, batch {idx} \
+                                is short but is not the last one of its partition",
                             );
-                            // A batch may only be shorter than requested when it
-                            // is the last one of its partition.
-                            if (rows.len() as u64) < batch_size {
-                                assert!(
-                                    rows_num % batch_size == rows.len() as u64,
-                                    "preset '{name}', batch_size {batch_size}, batch {idx} \
-                                    is short but is not the last one of its partition",
-                                );
-                            }
                         }
                     }
-                });
+                }
             }
         }
     }
@@ -1119,20 +1090,18 @@ mod tests {
                 let mut preset = preset.clone();
                 preset.set_batch_size(batch_size);
                 let total_batches = preset.total_batches;
-                tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    for idx in [0, 1, 7, total_batches - 1] {
-                        assert_eq!(
-                            preset.get_partition_batch(idx).await,
-                            preset.get_partition_batch(idx + total_batches).await,
-                            "preset '{name}', batch_size {batch_size}, idx {idx}",
-                        );
-                        assert_eq!(
-                            preset.get_partition_batch(idx).await,
-                            preset.get_partition_batch(idx + total_batches * 3).await,
-                            "preset '{name}', batch_size {batch_size}, idx {idx}",
-                        );
-                    }
-                });
+                for idx in [0, 1, 7, total_batches - 1] {
+                    assert_eq!(
+                        preset.get_partition_batch(idx),
+                        preset.get_partition_batch(idx + total_batches),
+                        "preset '{name}', batch_size {batch_size}, idx {idx}",
+                    );
+                    assert_eq!(
+                        preset.get_partition_batch(idx),
+                        preset.get_partition_batch(idx + total_batches * 3),
+                        "preset '{name}', batch_size {batch_size}, idx {idx}",
+                    );
+                }
             }
         }
     }
@@ -1145,14 +1114,12 @@ mod tests {
             let mut preset = preset.clone();
             preset.set_batch_size(1);
             assert_eq!(preset.total_rows, preset.total_batches, "preset '{name}'");
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                for idx in 0..preset.total_rows {
-                    let (partition_idx, rows) = preset.get_partition_batch(idx).await;
-                    assert_eq!(1, rows.len(), "preset '{name}', idx {idx}");
-                    let (expected_partition_idx, _) = preset.get_partition_info(rows[0]).await;
-                    assert_eq!(expected_partition_idx, partition_idx, "preset '{name}', idx {idx}");
-                }
-            });
+            for idx in 0..preset.total_rows {
+                let (partition_idx, rows) = preset.get_partition_batch(idx);
+                assert_eq!(1, rows.len(), "preset '{name}', idx {idx}");
+                let (expected_partition_idx, _) = preset.get_partition_info(rows[0]);
+                assert_eq!(expected_partition_idx, partition_idx, "preset '{name}', idx {idx}");
+            }
         }
     }
 
@@ -1162,16 +1129,14 @@ mod tests {
         let mut preset = build_preset(1000, 13, "100:1");
         preset.set_batch_size(1000);
         assert_eq!(77, preset.total_batches);
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            for idx in 0..preset.total_batches {
-                let (partition_idx, rows) = preset.get_partition_batch(idx).await;
-                let (_, rows_num) = preset.get_partition_info(rows[0]).await;
-                assert_eq!(
-                    rows_num, rows.len() as u64,
-                    "partition {partition_idx} must be returned as a single whole batch",
-                );
-            }
-        });
+        for idx in 0..preset.total_batches {
+            let (partition_idx, rows) = preset.get_partition_batch(idx);
+            let (_, rows_num) = preset.get_partition_info(rows[0]);
+            assert_eq!(
+                rows_num, rows.len() as u64,
+                "partition {partition_idx} must be returned as a single whole batch",
+            );
+        }
     }
 
     #[test]
@@ -1225,28 +1190,26 @@ mod tests {
                     partition_range_ends.push(partn_offset);
                 }
                 let mut seen = vec![0u64; partition_range_ends.len()];
-                tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    for idx in 0..preset.total_batches {
-                        let (partition_idx, _) = preset.get_partition_batch(idx).await;
-                        let group_idx = partition_range_ends
-                            .iter()
-                            .position(|end| partition_idx < *end)
-                            .expect("partition index out of range");
-                        seen[group_idx] += 1;
-                        // after every single batch every group must still be
-                        // within one batch of its exact share
-                        let done = idx + 1;
-                        for (group_idx, count) in seen.iter().enumerate() {
-                            let ideal = done as f64 * preset.group_batches[group_idx] as f64
-                                / preset.total_batches as f64;
-                            assert!(
-                                (*count as f64 - ideal).abs() <= 1.5,
-                                "preset '{name}', batch_size {batch_size}: after {done} batches \
-                                group {group_idx} got {count} of them, its exact share is {ideal}",
-                            );
-                        }
+                for idx in 0..preset.total_batches {
+                    let (partition_idx, _) = preset.get_partition_batch(idx);
+                    let group_idx = partition_range_ends
+                        .iter()
+                        .position(|end| partition_idx < *end)
+                        .expect("partition index out of range");
+                    seen[group_idx] += 1;
+                    // after every single batch every group must still be
+                    // within one batch of its exact share
+                    let done = idx + 1;
+                    for (group_idx, count) in seen.iter().enumerate() {
+                        let ideal = done as f64 * preset.group_batches[group_idx] as f64
+                            / preset.total_batches as f64;
+                        assert!(
+                            (*count as f64 - ideal).abs() <= 1.5,
+                            "preset '{name}', batch_size {batch_size}: after {done} batches \
+                            group {group_idx} got {count} of them, its exact share is {ideal}",
+                        );
                     }
-                });
+                }
                 assert_eq!(
                     preset.group_batches, seen,
                     "preset '{name}', batch_size {batch_size}: a full pass must give every group \
@@ -1515,5 +1478,104 @@ mod tests {
     #[test]
     fn test_partition_row_distribution_preset_12_neg_wrong_percentages() {
         false_input_for_partition_row_distribution_preset("foo".to_string(), 1000, 10, "90:1,ten:1".to_string())
+    }
+
+    /// Clone of the preset stored in the context, to compare the context lookups against.
+    fn stored_preset(ctxt: &Context, preset_name: &str) -> RowDistributionPreset {
+        ctxt.partition_row_presets.try_lock().unwrap().get(preset_name)
+            .unwrap_or_else(|| panic!("Preset with name '{preset_name}' was not found"))
+            .clone()
+    }
+
+    /// The context lookups borrow the stored preset: they must return what the preset
+    /// itself returns, wrap the index around, leave the preset untouched and release the lock.
+    #[test]
+    fn test_partition_lookup_01_context_matches_stored_preset() {
+        let ctxt: Context = create_test_context();
+        let snapshot = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            _init_partition_row_distribution_preset(&ctxt, "foo", 10000, 20, "80:1,15:2,5:4").await
+                .expect("failed to init the preset");
+            _set_partition_batch_size(&ctxt, "foo", 4).await.expect("failed to set batch size");
+            let snapshot = stored_preset(&ctxt, "foo");
+
+            for idx in 0..snapshot.total_rows {
+                let actual = _get_partition_info(&ctxt, "foo", idx).await
+                    .expect("failed to get partition info");
+                assert_eq!(snapshot.get_partition_info(idx), actual, "idx {idx}");
+                for wrapped_idx in [idx + snapshot.total_rows, idx + snapshot.total_rows * 3] {
+                    let wrapped = _get_partition_info(&ctxt, "foo", wrapped_idx).await
+                        .expect("failed to get partition info");
+                    assert_eq!(actual, wrapped, "idx {idx} wrapped to {wrapped_idx}");
+                }
+            }
+            for idx in 0..snapshot.total_batches * 2 {
+                let actual = _get_partition_batch(&ctxt, "foo", idx).await
+                    .expect("failed to get a partition batch");
+                assert_eq!(snapshot.get_partition_batch(idx), actual, "batch idx {idx}");
+            }
+            snapshot
+        });
+
+        assert!(ctxt.partition_row_presets.try_lock().is_some(), "The lookups must release the presets lock");
+        assert_eq!(snapshot, stored_preset(&ctxt, "foo"), "The lookups must not change the stored preset");
+    }
+
+    /// Several presets live in one context: every lookup must borrow the preset it names.
+    #[test]
+    fn test_partition_lookup_02_multiple_presets_addressed_by_name() {
+        let ctxt: Context = create_test_context();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            _init_partition_row_distribution_preset(&ctxt, "foo", 1000, 10, "100:1").await
+                .expect("failed to init the 'foo' preset");
+            _init_partition_row_distribution_preset(&ctxt, "bar", 1000, 10, "90:1,10:2").await
+                .expect("failed to init the 'bar' preset");
+            _set_partition_batch_size(&ctxt, "foo", 3).await.expect("failed to set the 'foo' batch size");
+            _set_partition_batch_size(&ctxt, "bar", 7).await.expect("failed to set the 'bar' batch size");
+            let foo = stored_preset(&ctxt, "foo");
+            let bar = stored_preset(&ctxt, "bar");
+
+            let mut bar_rows_nums = std::collections::HashSet::new();
+            for idx in 0..1000 {
+                let foo_info = _get_partition_info(&ctxt, "foo", idx).await.expect("failed to get 'foo' info");
+                let bar_info = _get_partition_info(&ctxt, "bar", idx).await.expect("failed to get 'bar' info");
+                assert_eq!(foo.get_partition_info(idx), foo_info, "'foo' idx {idx}");
+                assert_eq!(bar.get_partition_info(idx), bar_info, "'bar' idx {idx}");
+                assert_eq!(10, foo_info.1, "'foo' has 10-row partitions only, idx {idx}");
+                bar_rows_nums.insert(bar_info.1);
+            }
+            assert_eq!(std::collections::HashSet::from([10, 20]), bar_rows_nums, "'bar' must report both of its partition sizes");
+
+            for idx in 0..foo.total_batches.max(bar.total_batches) {
+                let foo_batch = _get_partition_batch(&ctxt, "foo", idx).await.expect("failed to get a 'foo' batch");
+                let bar_batch = _get_partition_batch(&ctxt, "bar", idx).await.expect("failed to get a 'bar' batch");
+                assert_eq!(foo.get_partition_batch(idx), foo_batch, "'foo' batch idx {idx}");
+                assert_eq!(bar.get_partition_batch(idx), bar_batch, "'bar' batch idx {idx}");
+            }
+        });
+    }
+
+    /// An unknown preset name must be reported as such, and the lock must be released on that path too.
+    #[test]
+    fn test_partition_lookup_03_neg_unknown_preset() {
+        let ctxt: Context = create_test_context();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            _init_partition_row_distribution_preset(&ctxt, "foo", 1000, 25, "100:1").await
+                .expect("failed to init the preset");
+            _set_partition_batch_size(&ctxt, "foo", 4).await.expect("failed to set batch size");
+
+            let info_err = _get_partition_info(&ctxt, "bar", 0).await
+                .expect_err("an unknown preset must not be found by 'get_partition_info'");
+            assert!(
+                matches!(info_err.0, DbErrorKind::PartitionRowPresetNotFound(ref name) if name == "bar"),
+                "Unexpected error: {info_err:?}",
+            );
+            let batch_err = _get_partition_batch(&ctxt, "bar", 0).await
+                .expect_err("an unknown preset must not be found by 'get_partition_batch'");
+            assert!(
+                matches!(batch_err.0, DbErrorKind::PartitionRowPresetNotFound(ref name) if name == "bar"),
+                "Unexpected error: {batch_err:?}",
+            );
+        });
+        assert!(ctxt.partition_row_presets.try_lock().is_some(), "The failed lookups must release the presets lock");
     }
 }
