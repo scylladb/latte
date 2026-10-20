@@ -94,28 +94,32 @@ impl Stream for SinusoidalIntervalStream {
     type Item = Instant;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let now = Instant::now();
-        let current_expected_tick = self.next_expected_tick;
-        if now >= self.next_expected_tick {
-            let interval_duration = self.next_interval_duration();
-            self.next_expected_tick += interval_duration;
-            Poll::Ready(Some(current_expected_tick))
-        } else {
+        loop {
+            let now = Instant::now();
+            let current_expected_tick = self.next_expected_tick;
+            if now >= self.next_expected_tick {
+                let interval_duration = self.next_interval_duration();
+                self.next_expected_tick += interval_duration;
+                return Poll::Ready(Some(current_expected_tick));
+            }
             // NOTE: If we are behind, keep trying to emit ticks until we catch up
             let interval_duration = self.next_interval_duration();
             let next_tick = self.next_expected_tick + interval_duration;
             if next_tick <= now {
                 self.next_expected_tick = next_tick;
-                Poll::Ready(Some(current_expected_tick))
-            } else {
-                // NOTE: Reuse the pinned Sleep timer instead of spawning a new task per tick
-                let sleep_duration = self.next_expected_tick - now;
-                self.sleep
-                    .as_mut()
-                    .reset(tokio::time::Instant::now() + sleep_duration);
-                let _ = self.sleep.as_mut().poll(cx);
-                Poll::Pending
+                return Poll::Ready(Some(current_expected_tick));
             }
+            // NOTE: Reuse the pinned Sleep timer instead of spawning a new task per tick
+            let sleep_duration = self.next_expected_tick - now;
+            self.sleep
+                .as_mut()
+                .reset(tokio::time::Instant::now() + sleep_duration);
+            if self.sleep.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            // NOTE: The timer may complete right in the 'poll' call above, without registering
+            //       the waker. Returning 'Pending' then would leave nothing to wake this task up,
+            //       so re-check the schedule instead.
         }
     }
 }
@@ -128,6 +132,12 @@ fn sinusoidal_interval_stream(
 ) -> impl Stream<Item = Instant> {
     SinusoidalIntervalStream::new(rate, amplitude, frequency)
 }
+
+/// Number of workload statistics samples a worker may have queued for the consumer.
+/// The worker stops issuing requests while its queue is full, so the queue must be deep enough
+/// to absorb a stalled consumer or another worker delaying the consumer.
+/// Each sample holds a few latency histograms, so the queue cannot be unbounded.
+const STATS_QUEUE_CAPACITY: usize = 16;
 
 /// Runs a stream of workload cycles till completion in the context of the current task.
 /// Periodically sends workload statistics to the `out` channel.
@@ -204,7 +214,7 @@ fn spawn_stream(
     iter_counter: BoundedCycleCounter,
     progress: Arc<StatusLine<Progress>>,
 ) -> Receiver<Result<WorkloadStats>> {
-    let (tx, rx) = channel(1);
+    let (tx, rx) = channel(STATS_QUEUE_CAPACITY);
 
     tokio::spawn(async move {
         match rate {
@@ -417,6 +427,98 @@ mod test {
     async fn test_terminate() {
         let s = stream::iter(vec![Ok(1), Ok(2), Err(3), Ok(4), Err(5)]).terminate_after_error();
         assert_eq!(s.collect::<Vec<_>>().await, vec![Ok(1), Ok(2), Err(3)])
+    }
+
+    mod spawn_stream_test {
+        use crate::config::{Interval, RetryInterval, ValidationStrategy};
+        use crate::exec::cycle::BoundedCycleCounter;
+        use crate::exec::progress::Progress;
+        use crate::exec::workload::{FnRef, Program, Workload};
+        use crate::exec::{spawn_stream, STATS_QUEUE_CAPACITY};
+        use crate::scripting::context::Context;
+        use futures::StreamExt;
+        use rune::Source;
+        use status_line::StatusLine;
+        use std::collections::HashMap;
+        use std::num::NonZeroUsize;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        #[cfg(feature = "cql")]
+        fn test_context() -> Context {
+            Context::new(
+                None,
+                501,
+                "dc".to_string(),
+                "rack".to_string(),
+                0,
+                RetryInterval::new("1,2").expect("failed to parse retry interval"),
+                ValidationStrategy::Ignore,
+            )
+        }
+
+        #[cfg(all(feature = "alternator", not(feature = "cql")))]
+        fn test_context() -> Context {
+            Context::new(
+                None,
+                0,
+                RetryInterval::new("1,2").expect("failed to parse retry interval"),
+                ValidationStrategy::Ignore,
+                0,
+            )
+        }
+
+        fn test_workload() -> Workload {
+            let source = Source::memory("pub async fn run(ctx, i) {}").unwrap();
+            let program = Program::new(source, HashMap::new()).unwrap();
+            Workload::new(test_context(), program, &[(FnRef::new("run"), 1.0)])
+        }
+
+        /// A worker must keep issuing requests while the consumer does not read its stats,
+        /// as long as they fit into the stats queue.
+        /// With a single-slot queue all the workers stalled on any delay of the consumer.
+        #[tokio::test]
+        async fn keeps_running_while_consumer_is_not_reading() {
+            let sample_size = 10;
+            // NOTE: The worker also sends the last, partially filled sample,
+            //       so one cycle less makes it send exactly as many samples as the queue holds
+            let cycles = STATS_QUEUE_CAPACITY as u64 * sample_size - 1;
+            let runtime = tokio::runtime::Handle::current();
+            let progress = Progress::with_count("test".to_string(), cycles);
+            let progress_opts = status_line::Options {
+                initially_visible: false,
+                ..Default::default()
+            };
+            let rx = spawn_stream(
+                NonZeroUsize::new(1).unwrap(),
+                None,
+                None,
+                0.0,
+                Interval::Count(sample_size),
+                test_workload(),
+                BoundedCycleCounter::new(Interval::Count(cycles), (0, i64::MAX)),
+                Arc::new(StatusLine::with_options(progress, progress_opts)),
+            );
+            // NOTE: The worker task exits only after its last sample is sent,
+            //       so it must finish without anybody reading the samples
+            let worker_finished = async {
+                while runtime.metrics().num_alive_tasks() > 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(30), worker_finished)
+                .await
+                .expect("worker stalled on a full stats queue");
+
+            let samples: Vec<_> = rx.map(|s| s.expect("workload failed")).collect().await;
+            assert_eq!(samples.len(), STATS_QUEUE_CAPACITY);
+            let completed: u64 = samples
+                .iter()
+                .flat_map(|s| &s.function_stats)
+                .map(|s| s.call_count)
+                .sum();
+            assert_eq!(completed, cycles);
+        }
     }
 
     mod sinusoidal_interval_stream_test {
