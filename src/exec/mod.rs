@@ -10,10 +10,12 @@ use std::future::ready;
 use std::io::IsTerminal;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::signal::ctrl_c;
+use tracing::warn;
 
 use crate::error::{LatteError, Result};
 use crate::stats::histogram::HistogramWriter;
@@ -21,10 +23,12 @@ use crate::{
     BenchmarkStats, BoundedCycleCounter, Interval, Progress, Recorder, Workload, WorkloadStats,
 };
 use chunks::ChunksExt;
+use schedule_lag::{PeriodObservation, ScheduleLagMonitor};
 
 mod chunks;
 pub mod cycle;
 pub mod progress;
+mod schedule_lag;
 pub mod workload;
 
 /// Infinite iterator returning floats that form a sinusoidal wave
@@ -94,28 +98,32 @@ impl Stream for SinusoidalIntervalStream {
     type Item = Instant;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let now = Instant::now();
-        let current_expected_tick = self.next_expected_tick;
-        if now >= self.next_expected_tick {
-            let interval_duration = self.next_interval_duration();
-            self.next_expected_tick += interval_duration;
-            Poll::Ready(Some(current_expected_tick))
-        } else {
+        loop {
+            let now = Instant::now();
+            let current_expected_tick = self.next_expected_tick;
+            if now >= self.next_expected_tick {
+                let interval_duration = self.next_interval_duration();
+                self.next_expected_tick += interval_duration;
+                return Poll::Ready(Some(current_expected_tick));
+            }
             // NOTE: If we are behind, keep trying to emit ticks until we catch up
             let interval_duration = self.next_interval_duration();
             let next_tick = self.next_expected_tick + interval_duration;
             if next_tick <= now {
                 self.next_expected_tick = next_tick;
-                Poll::Ready(Some(current_expected_tick))
-            } else {
-                // NOTE: Reuse the pinned Sleep timer instead of spawning a new task per tick
-                let sleep_duration = self.next_expected_tick - now;
-                self.sleep
-                    .as_mut()
-                    .reset(tokio::time::Instant::now() + sleep_duration);
-                let _ = self.sleep.as_mut().poll(cx);
-                Poll::Pending
+                return Poll::Ready(Some(current_expected_tick));
             }
+            // NOTE: Reuse the pinned Sleep timer instead of spawning a new task per tick
+            let sleep_duration = self.next_expected_tick - now;
+            self.sleep
+                .as_mut()
+                .reset(tokio::time::Instant::now() + sleep_duration);
+            if self.sleep.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            // NOTE: The timer may complete right in the 'poll' call above, without registering
+            //       the waker. Returning 'Pending' then would leave nothing to wake this task up,
+            //       so re-check the schedule instead.
         }
     }
 }
@@ -129,6 +137,32 @@ fn sinusoidal_interval_stream(
     SinusoidalIntervalStream::new(rate, amplitude, frequency)
 }
 
+/// Number of workload statistics samples a worker may have queued for the consumer.
+/// The worker stops issuing requests while its queue is full, so the queue must be deep enough
+/// to absorb a stalled consumer or another worker delaying the consumer.
+/// Each sample holds a few latency histograms, so the queue cannot be unbounded.
+const STATS_QUEUE_CAPACITY: usize = 16;
+
+/// Sends an item to the workload statistics consumer.
+/// Adds the time spent waiting for free space in the queue to `wait`.
+/// Returns false if the consumer is gone.
+async fn send_stats(
+    out: &mut Sender<Result<WorkloadStats>>,
+    item: Result<WorkloadStats>,
+    wait: &mut Duration,
+) -> bool {
+    match out.try_send(item) {
+        Ok(()) => true,
+        Err(e) if e.is_full() => {
+            let start = Instant::now();
+            let sent = out.send(e.into_inner()).await.is_ok();
+            *wait += start.elapsed();
+            sent
+        }
+        Err(_) => false,
+    }
+}
+
 /// Runs a stream of workload cycles till completion in the context of the current task.
 /// Periodically sends workload statistics to the `out` channel.
 ///
@@ -140,7 +174,9 @@ fn sinusoidal_interval_stream(
 /// - sampling: controls when to output workload statistics
 /// - progress: progress bar notified about each successful cycle
 /// - out: the channel to receive workload statistics
+/// - lag_monitor: reports the worker falling behind its request schedule
 ///
+#[allow(clippy::too_many_arguments)]
 async fn run_stream(
     stream: impl Stream<Item = Instant> + std::marker::Unpin,
     workload: Workload,
@@ -149,20 +185,32 @@ async fn run_stream(
     sampling: Interval,
     progress: Arc<StatusLine<Progress>>,
     mut out: Sender<Result<WorkloadStats>>,
+    mut lag_monitor: ScheduleLagMonitor,
 ) {
     let mut iter_counter = cycle_counter;
     let sample_size = sampling.count().unwrap_or(u64::MAX);
     let sample_duration = sampling.period().unwrap_or(tokio::time::Duration::MAX);
+    // NOTE: Atomics only to keep the future 'Send', they are used by this task alone
+    let max_lag_ns = AtomicU64::new(0);
+    let in_flight = AtomicUsize::new(0);
+    let max_in_flight = AtomicUsize::new(0);
 
     let stats_stream = stream
         .map(|scheduled_time| iter_counter.next().map(|cycle| (cycle, scheduled_time)))
         .take_while(|opt| ready(opt.is_some()))
         .map(|opt| {
             let (cycle, scheduled_time) = opt.unwrap();
+            let lag = Instant::now().saturating_duration_since(scheduled_time);
+            max_lag_ns.fetch_max(lag.as_nanos() as u64, Ordering::Relaxed);
+            let current_in_flight = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+            max_in_flight.fetch_max(current_in_flight, Ordering::Relaxed);
             tokio::task::unconstrained(workload.run(cycle, scheduled_time))
         })
         .buffer_unordered(concurrency.get())
-        .inspect(|_| progress.tick())
+        .inspect(|_| {
+            in_flight.fetch_sub(1, Ordering::Relaxed);
+            progress.tick()
+        })
         .take_until(ctrl_c())
         .terminate_after_error()
         .chunks_aggregated(sample_size, sample_duration, Vec::new, |errors, result| {
@@ -175,12 +223,25 @@ async fn run_stream(
     pin_mut!(stats_stream);
 
     workload.reset(Instant::now());
-    while let Some((stats, errors)) = stats_stream.next().await {
-        if out.send(Ok(stats)).await.is_err() {
+    let mut stats_wait = Duration::ZERO;
+    while let Some((mut stats, errors)) = stats_stream.next().await {
+        let observation = PeriodObservation {
+            max_lag: Duration::from_nanos(max_lag_ns.swap(0, Ordering::Relaxed)),
+            max_in_flight: max_in_flight.swap(in_flight.load(Ordering::Relaxed), Ordering::Relaxed),
+            mean_request_latency: stats.session_stats.resp_times_ns.mean_duration(),
+            cycles: stats.function_stats.iter().map(|s| s.call_count).sum(),
+            duration: stats.end_time.saturating_duration_since(stats.start_time),
+            stats_wait: std::mem::take(&mut stats_wait),
+        };
+        if let Some(msg) = lag_monitor.check(Instant::now(), &observation) {
+            warn!("{msg}");
+            stats.warnings.push(msg);
+        }
+        if !send_stats(&mut out, Ok(stats), &mut stats_wait).await {
             return;
         }
         for err in errors {
-            if out.send(Err(err)).await.is_err() {
+            if !send_stats(&mut out, Err(err), &mut stats_wait).await {
                 return;
             }
         }
@@ -195,6 +256,7 @@ async fn run_stream(
 /// Returns a stream where workload statistics are published.
 #[allow(clippy::too_many_arguments)]
 fn spawn_stream(
+    worker_id: usize,
     concurrency: NonZeroUsize,
     rate: Option<f64>,
     rate_sine_amplitude: Option<f64>, // Enables the sine wave if set
@@ -204,7 +266,8 @@ fn spawn_stream(
     iter_counter: BoundedCycleCounter,
     progress: Arc<StatusLine<Progress>>,
 ) -> Receiver<Result<WorkloadStats>> {
-    let (tx, rx) = channel(1);
+    let (tx, rx) = channel(STATS_QUEUE_CAPACITY);
+    let lag_monitor = ScheduleLagMonitor::new(worker_id, concurrency.get());
 
     tokio::spawn(async move {
         match rate {
@@ -224,6 +287,7 @@ fn spawn_stream(
                     sampling,
                     progress,
                     tx,
+                    lag_monitor,
                 )
                 .await
             }
@@ -237,6 +301,7 @@ fn spawn_stream(
                     sampling,
                     progress,
                     tx,
+                    lag_monitor,
                 )
                 .await
             }
@@ -330,6 +395,7 @@ pub async fn par_execute(
             .prepare_worker(worker_id as u64, thread_count as u64)
             .await?;
         let s = spawn_stream(
+            worker_id,
             concurrency,
             rate.map(|r| r / (thread_count as f64)),
             rate_sine_amplitude,

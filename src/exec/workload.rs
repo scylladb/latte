@@ -343,6 +343,8 @@ pub struct WorkloadStats {
     pub end_time: Instant,
     pub function_stats: Vec<FnStats>,
     pub session_stats: SessionStats,
+    /// Messages about the worker's own health, e.g. falling behind the request schedule
+    pub warnings: Vec<String>,
 }
 
 /// Mutable part of Workload
@@ -555,6 +557,7 @@ impl Workload {
             end_time,
             function_stats: state.fn_stats.clone(),
             session_stats: self.context().take_session_stats(),
+            warnings: Vec::new(),
         };
         result
     }
