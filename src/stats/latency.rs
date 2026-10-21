@@ -39,6 +39,12 @@ impl LatencyDistributionRecorder {
         self.ess_estimator.clear();
     }
 
+    /// Returns the mean of the recorded durations, or None if nothing was recorded
+    pub fn mean_duration(&self) -> Option<Duration> {
+        (!self.histogram_ns.is_empty())
+            .then(|| Duration::from_nanos(self.histogram_ns.mean().round() as u64))
+    }
+
     pub fn distribution(&self) -> LatencyDistribution {
         LatencyDistribution {
             mean: self.mean(1),

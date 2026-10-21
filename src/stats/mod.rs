@@ -238,6 +238,8 @@ pub struct Sample {
     pub request_latency: LatencyDistribution,
     #[serde(default)]
     pub custom_metrics: HashMap<String, ValueDistribution>,
+    #[serde(skip)]
+    pub worker_warnings: Vec<String>,
 }
 
 impl Sample {
@@ -259,8 +261,10 @@ impl Sample {
         let mut cycle_latency = LatencyDistributionRecorder::default();
         let mut cycle_latency_per_fn = HashMap::<String, LatencyDistributionRecorder>::new();
         let mut custom_metrics = HashMap::<String, ValueDistributionRecorder>::new();
+        let mut worker_warnings = Vec::new();
 
         for s in stats {
+            worker_warnings.extend(s.warnings.iter().cloned());
             let ss = &s.session_stats;
             request_count += ss.req_count;
             row_count += ss.row_count;
@@ -320,6 +324,7 @@ impl Sample {
                 .into_iter()
                 .map(|(k, v)| (k, v.distribution()))
                 .collect(),
+            worker_warnings,
         }
     }
 }

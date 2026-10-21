@@ -677,6 +677,9 @@ pub fn print_log_header() {
 
 impl Display for Sample {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for warning in &self.worker_warnings {
+            writeln!(f, "{warning}")?;
+        }
         if self.req_retry_count > 0 {
             let mut num_of_printed_errors = 0;
             let mut error_msg_bunch = String::new();
