@@ -393,6 +393,8 @@ are pure, i.e. invoking them multiple times with the same parameters yields alwa
 - `latte::hash_range(i, max)` – generates an integer value in range `0..max`
 - `latte::hash_select(i, vector)` – selects an item from a vector based on a hash
 - `latte::blob(i, len)` – generates a random binary blob of length `len`
+- `latte::compressible_blob(i, len, repeat_pct, alphabet_size)` – generates a binary blob of length `len`
+  that compresses as much as asked, see [Compressible blobs](#compressible-blobs)
 - `latte::normal(i, mean, std_dev)` – generates a floating point number from a normal distribution
 - `latte::normal_f32(i, mean, std_dev)` – generates a floating point 32bit number from a normal distribution
 - `latte::uniform(i, min, max)` – generates a floating point number from a uniform distribution
@@ -401,6 +403,46 @@ are pure, i.e. invoking them multiple times with the same parameters yields alwa
   that takes an integer element index and generates an element
 - `latte::join(vector, separator)` – joins a collection of strings using a separator
 - `x.clamp(min, max)` – restricts the range of an integer or a float value to given range
+
+#### Compressible blobs
+
+No compressor can shrink the random bytes of `latte::blob`, while real data usually compresses well.
+`latte::compressible_blob(i, len, repeat_pct, alphabet_size)` generates blobs that compress about as much
+as asked. Each blob is a series of 8–64 bytes segments:
+
+- with `repeat_pct`% probability (`0..=100`) a segment repeats bytes from at most 1 KiB back in the
+  same blob. LZ4, zstd and the other LZ77 based compressors shrink such segments.
+- other segments hold literal bytes, each one of `alphabet_size` distinct values (`1..=256`).
+  Only the entropy coding compressors, such as zstd, shrink them: to `log2(alphabet_size)` bits per byte
+  at best.
+
+So `repeat_pct` sets the savings of every compressor, and a smaller `alphabet_size` adds savings for zstd
+only. `repeat_pct = 0` with `alphabet_size = 256` is as incompressible as `latte::blob`.
+
+```rust
+  let data = compressible_blob(idx, 2048, 64, 40);
+```
+
+The savings of compressing 1–3 KiB blobs in 4 KiB chunks, the ScyllaDB default.
+zstd uses level 3, and in the "zstd + dict" column also a 64 KiB dictionary trained on other blobs of
+the same parameters, similar to ScyllaDB's `ZstdWithDictsCompressor`:
+
+| `repeat_pct` | `alphabet_size` | LZ4 | zstd | zstd + dict |
+|---|---|---|---|---|
+| 0 | 256 | 0% | 0% | 0% |
+| 40 | 256 | 30% | 32% | 33% |
+| 64 | 256 | 49% | 52% | 53% |
+| 64 | 40 | 49% | 65% | 65% |
+| 64 | 16 | 49% | 71% | 72% |
+| 70 | 32 | 53% | 70% | 70% |
+
+The savings on a database are a bit lower, because the rows also hold keys, other columns and
+the storage format overhead, so check them on the target database.
+To print the savings of other parameters, run:
+
+```shell
+cargo test compressible_blob_calibration_grid -- --ignored --nocapture
+```
 
 #### Type conversions
 
