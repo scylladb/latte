@@ -1,0 +1,99 @@
+// Integration workload for the 'latte::compressible_blob' and 'latte::compressible_text' functions.
+//
+// 'insert' writes their values to the 'blob' and 'text' columns of a compressed table,
+// so ScyllaDB, which rejects invalid UTF-8 in 'text' columns, accepts the generated strings.
+// 'get' reads the values back and compares them with the regenerated ones.
+//
+// USAGE:
+// 1) Create schema:
+// $ latte schema workloads/integration_tests/compressible_data.rn 172.17.0.2
+//
+// 2) Insert the rows:
+// $ latte run workloads/integration_tests/compressible_data.rn -q \
+//     -d 1000 -f insert -- 172.17.0.2
+//
+// 3) Read the rows back, validating the values.
+//    The '--end-cycle' option keeps the reads of a longer run within the inserted rows:
+// $ latte run workloads/integration_tests/compressible_data.rn -q \
+//     -d 10s --end-cycle 1000 -f get -- 172.17.0.2
+
+use latte::*;
+
+const RECREATE_KEYSPACE = latte::param!("recreate_keyspace", false);
+const KEYSPACE = latte::param!("keyspace", "latte");
+const TABLE = latte::param!("table", "compressible_data");
+const REPLICATION_FACTOR = latte::param!("replication_factor", 3);
+const COMPRESSION = latte::param!("compression", "LZ4Compressor");
+
+const VALUE_LEN = latte::param!("value_len", 2048);
+const REPEAT_PCT = latte::param!("repeat_pct", 64);
+const BLOB_ALPHABET_SIZE = latte::param!("blob_alphabet_size", 40);
+const TEXT_ALPHABET_SIZE = latte::param!("text_alphabet_size", 40);
+
+const P_STMT = #{
+    "INSERT": #{
+        "NAME": "p_stmt_compressible_data__insert",
+        "CQL": `INSERT INTO ${KEYSPACE}.${TABLE}(pk, b, t) VALUES (:pk, :b, :t)`,
+    },
+    "GET": #{
+        "NAME": "p_stmt_compressible_data__get",
+        "CQL": `SELECT b, t FROM ${KEYSPACE}.${TABLE} WHERE pk = :pk`,
+    },
+};
+
+pub async fn schema(db) {
+    if RECREATE_KEYSPACE {
+        println!(
+            "rune-info: Recreating '{keyspace}' keyspace",
+            keyspace=KEYSPACE,
+        );
+        db.execute(`DROP KEYSPACE IF EXISTS ${KEYSPACE}`).await?;
+    }
+    db.execute(`CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE}
+        WITH REPLICATION = {
+          'class': 'NetworkTopologyStrategy',
+          'replication_factor': ${REPLICATION_FACTOR}
+        }
+    `).await?;
+    // NOTE: 4 KiB chunks, the ScyllaDB default the README savings are measured with
+    db.execute(`CREATE TABLE IF NOT EXISTS ${KEYSPACE}.${TABLE}(
+        pk bigint PRIMARY KEY,
+        b blob,
+        t text
+    ) WITH compression = {'sstable_compression': '${COMPRESSION}', 'chunk_length_in_kb': 4}
+    `).await?;
+}
+
+pub async fn prepare(db) {
+    db.prepare(P_STMT.INSERT.NAME, P_STMT.INSERT.CQL).await?;
+    db.prepare(P_STMT.GET.NAME, P_STMT.GET.CQL).await?;
+}
+
+fn generate_row(i) {
+    #{
+        "pk": i,
+        "b": compressible_blob(i, VALUE_LEN, REPEAT_PCT, BLOB_ALPHABET_SIZE),
+        "t": compressible_text(i, VALUE_LEN, REPEAT_PCT, TEXT_ALPHABET_SIZE),
+    }
+}
+
+pub async fn insert(db, i) {
+    db.execute_prepared(P_STMT.INSERT.NAME, generate_row(i)).await?
+}
+
+pub async fn get(db, i) {
+    let expected = generate_row(i);
+    let rows = db.execute_prepared_with_result(P_STMT.GET.NAME, [expected.pk]).await?;
+    let rows_len = rows.len();
+    if rows_len != 1 {
+        db.signal_failure(`pk ${expected.pk}: expected exactly 1 row, got ${rows_len}`).await?;
+        return;
+    }
+    for col_name in ["b", "t"] {
+        if rows.0.get(col_name)? != expected.get(col_name)? {
+            db.signal_failure(
+                `pk ${expected.pk}: the '${col_name}' column differs from the generated value`
+            ).await?;
+        }
+    }
+}
