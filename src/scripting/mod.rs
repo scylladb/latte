@@ -202,6 +202,7 @@ fn init_latte_module(params: HashMap<String, String>) -> Result<Module, ContextE
         functions_common::param(ctx, &params, ts)
     })?;
     latte_module.function_meta(functions_common::blob)?;
+    latte_module.function_meta(functions_common::compressible_blob)?;
     latte_module.function_meta(functions_common::text)?;
     latte_module.function_meta(functions_common::vector)?;
     latte_module.function_meta(functions_common::join)?;

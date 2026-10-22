@@ -85,6 +85,8 @@ tempfile = "3"
 rstest = "0.22"
 tokio = { version = "1.52.1", features = ["rt", "test-util", "macros"] }
 testcontainers = "0.27"
+lz4_flex = "0.14"
+zstd = "0.13"
 
 [features]
 default = ["cql"]
