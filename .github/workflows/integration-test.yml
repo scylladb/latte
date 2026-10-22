@@ -69,9 +69,11 @@ jobs:
           docker run -d --name scylladb-node1 \
             -p 9042:9042 \
             -p 8000:8000 \
+            -p 127.0.0.1:10000:10000 \
             ${{ env.SCYLLADB_IMAGE_REGISTRY }}:${{ env.SCYLLADB_IMAGE_TAG }} \
             --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0 \
-            --alternator-port 8000 --alternator-write-isolation always
+            --alternator-port 8000 --alternator-write-isolation always \
+            --api-address 0.0.0.0
           wait_for_cql scylladb-node1
           log_resources "after scylladb-node1"
 
@@ -96,4 +98,5 @@ jobs:
           SCYLLA_TEST_HOST: "127.0.0.1"
           SCYLLA_TEST_PORT: "9042"
           SCYLLA_ALTERNATOR_TEST_PORT: "8000"
+          SCYLLA_REST_TEST_PORT: "10000"
         run: cargo test --test integration_test -- --ignored --nocapture

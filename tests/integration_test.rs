@@ -3,18 +3,22 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
+use testcontainers::bollard::models::PortBinding;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 const CQL_PORT: u16 = 9042;
 const ALTERNATOR_PORT: u16 = 8000;
+const REST_PORT: u16 = 10000;
 
 struct ScyllaDb {
     _container: Option<ContainerAsync<GenericImage>>,
     host: String,
     cql_port: u16,
     alternator_port: u16,
+    rest_host: String,
+    rest_port: u16,
 }
 
 type StartResult = Result<ScyllaDb, String>;
@@ -29,16 +33,25 @@ async fn start_scylla() -> StartResult {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(ALTERNATOR_PORT);
+        // NOTE: ScyllaDB serves the REST API on localhost by default, so a remote node needs
+        //       '--api-address' set, or a tunnel to its REST API given by these variables
+        let rest_host = std::env::var("SCYLLA_REST_TEST_HOST").unwrap_or_else(|_| host.clone());
+        let rest_port = std::env::var("SCYLLA_REST_TEST_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(REST_PORT);
 
         eprintln!(
-            "Using pre-existing ScyllaDB at {} (CQL: {}, Alternator: {})",
-            host, cql_port, alternator_port
+            "Using pre-existing ScyllaDB at {} (CQL: {}, Alternator: {}, REST: {}:{})",
+            host, cql_port, alternator_port, rest_host, rest_port
         );
         return Ok(ScyllaDb {
             _container: None,
             host,
             cql_port,
             alternator_port,
+            rest_host,
+            rest_port,
         });
     }
 
@@ -50,6 +63,7 @@ async fn start_scylla() -> StartResult {
     let container = GenericImage::new(&image_registry, &image_tag)
         .with_exposed_port(CQL_PORT.tcp())
         .with_exposed_port(ALTERNATOR_PORT.tcp())
+        .with_exposed_port(REST_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stderr("serving"))
         .with_cmd(vec![
             "--smp".to_string(),
@@ -66,7 +80,19 @@ async fn start_scylla() -> StartResult {
             ALTERNATOR_PORT.to_string(),
             "--alternator-write-isolation".to_string(),
             "always".to_string(),
+            "--api-address".to_string(), // Makes the REST API reachable from the host
+            "0.0.0.0".to_string(),
         ])
+        // NOTE: publish the administrative REST API on localhost only, at a random port
+        .with_host_config_modifier(|host_config| {
+            host_config.port_bindings.get_or_insert_default().insert(
+                format!("{REST_PORT}/tcp"),
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: None,
+                }]),
+            );
+        })
         .with_startup_timeout(Duration::from_secs(120))
         .start()
         .await
@@ -82,16 +108,24 @@ async fn start_scylla() -> StartResult {
         .await
         .map_err(|e| format!("failed to get mapped Alternator port: {e}"))?;
 
+    let rest_port = container
+        .get_host_port_ipv4(REST_PORT.tcp())
+        .await
+        .map_err(|e| format!("failed to get mapped REST API port: {e}"))?;
+
     let host = String::from("127.0.0.1");
 
     wait_for_port_readiness(&host, cql_port).await;
     wait_for_port_readiness(&host, alternator_port).await;
+    let rest_host = host.clone();
 
     Ok(ScyllaDb {
         _container: Some(container),
         host,
         cql_port,
         alternator_port,
+        rest_host,
+        rest_port,
     })
 }
 
@@ -777,6 +811,98 @@ async fn test_latte_cql_row_count_validation_workload() {
             assert_no_errors(&validation_result);
         }
     }
+}
+
+/// Calls the ScyllaDB REST API of the node the tests connect to and returns the response body
+async fn scylla_rest(db: &ScyllaDb, method: reqwest::Method, path: &str) -> String {
+    let url = format!("http://{}:{}{}", db.rest_host, db.rest_port, path);
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("REST API client")
+        .request(method, &url)
+        .send()
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to call the REST API at {url}: {e}\n\
+                 Run ScyllaDB with '--api-address', or set SCYLLA_REST_TEST_HOST and \
+                 SCYLLA_REST_TEST_PORT to a tunnel to its REST API"
+            )
+        });
+    let status = response.status();
+    let body = response.text().await.expect("REST API response body");
+    assert!(
+        status.is_success(),
+        "REST API call {url} failed with {status}: {body}"
+    );
+    body
+}
+
+/// Writes the values of 'latte::compressible_blob' and 'latte::compressible_text' to a table
+/// compressed with LZ4 and reads them back. The workload fails the reads if a value differs
+/// from the generated one. Then it checks that ScyllaDB compresses them.
+#[tokio::test]
+#[ignore]
+async fn test_latte_cql_compressible_data_workload() {
+    let db = start_scylla().await.expect("Failed to start ScyllaDB");
+
+    let latte = LatteVariant::Cql;
+    let workload = workload_path("integration_tests/compressible_data.rn");
+    let row_count = "1000";
+    // NOTE: a keyspace of the test, recreated, so the compression ratio covers this run only
+    let keyspace = "latte_compressible_data";
+    let keyspace_param = format!("keyspace=\"{keyspace}\"");
+
+    let mut args: Vec<&str> = vec!["-P", &keyspace_param];
+    if db._container.is_some() {
+        args.extend(["-P", "replication_factor=1"]); // Running in a single container
+    }
+
+    println!("\n[TEST-INFO] Phase 1: Create the schema ({:?})", latte);
+    let mut schema_args = args.clone();
+    schema_args.extend(["-P", "recreate_keyspace=true"]);
+    latte.schema(&db, &workload, &schema_args);
+
+    println!("\n[TEST-INFO] Phase 2: Insert the compressible values");
+    let mut insert_args = args.clone();
+    insert_args.push("-f=insert");
+    let insert_result = latte.run(&db, &workload, row_count, &insert_args);
+    assert_latte_success(&insert_result);
+    assert_no_errors(&insert_result);
+    assert_has_throughput_metrics(&insert_result);
+
+    println!("\n[TEST-INFO] Phase 3: Read the values back, validating them");
+    let mut get_args = args.clone();
+    get_args.push("-f=get");
+    let get_result = latte.run(&db, &workload, row_count, &get_args);
+    assert_latte_success(&get_result);
+    assert_no_errors(&get_result);
+    assert_eq!(
+        summary_stat(&get_result, "Rows"),
+        summary_stat(&get_result, "Requests"),
+        "some reads found no row:\n{}",
+        get_result.output
+    );
+
+    println!("\n[TEST-INFO] Phase 4: ScyllaDB must compress the values");
+    let flush_path = format!("/storage_service/keyspace_flush/{keyspace}?cf=compressible_data");
+    scylla_rest(&db, reqwest::Method::POST, &flush_path).await;
+    let ratio_path =
+        format!("/column_family/metrics/compression_ratio/{keyspace}:compressible_data");
+    let response = scylla_rest(&db, reqwest::Method::GET, &ratio_path).await;
+    let ratio: f64 = response
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("no compression ratio in the REST API response: {response}"));
+    println!("[TEST-INFO] SSTable compression ratio: {ratio}");
+    // NOTE: LZ4 saves about 49% of the values, see the README. It cannot save more, because it
+    //       shrinks only the repeated segments. The ratio of 20 runs of different cycle ranges
+    //       was 0.510..=0.515, the range leaves room for the storage format changes.
+    assert!(
+        (0.48..=0.54).contains(&ratio),
+        "SSTable compression ratio {ratio} is out of the expected 0.48..=0.54 range"
+    );
 }
 
 /// Extracts the `total_batches` value from the `set_partition_batch_size` info

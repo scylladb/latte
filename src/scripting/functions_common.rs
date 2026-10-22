@@ -176,20 +176,168 @@ pub fn blob(seed: i64, len: usize) -> Vec<u8> {
     (0..len).map(|_| rng.random::<u8>()).collect()
 }
 
+/// Shortest and longest segment of a compressible blob or text. 8 bytes is above the 4 bytes
+/// minimum match of LZ4 and zstd, so both compressors see every repeated segment.
+const COMPRESSIBLE_SEGMENT_LEN: std::ops::RangeInclusive<usize> = 8..=64;
+
+/// The smallest number of distinct literal values of a compressible blob or text.
+/// LZ4 finds chance matches of 4+ bytes in the literals of smaller alphabets, which ties its
+/// savings to 'alphabet_size' too: by 1.2 percentage points at 16 values, and by 0.5 at most at 20.
+const COMPRESSIBLE_MIN_ALPHABET_SIZE: i64 = 20;
+
+/// How far back a repeated segment of a compressible blob or text may copy from. It is kept well
+/// below the 4 KiB chunks ScyllaDB compresses by default, so most copies sit in the same chunk as
+/// their source, which is the only place a compressor without a dictionary can find them.
+const COMPRESSIBLE_MAX_DISTANCE: usize = 1024;
+
+/// Generates a compressible binary blob of given length.
+/// Like 'blob', it is fully defined by its parameters, and 'seed' is used to seed the RNG.
+///
+/// The blob is a series of 8..=64 bytes segments:
+/// - with 'repeat_pct'% probability a segment repeats bytes from at most 1 KiB back in the blob,
+///   which LZ4, zstd and the other LZ77 based compressors shrink;
+/// - otherwise it holds literal bytes, each one of 'alphabet_size' distinct values (20..=256),
+///   which only the entropy coding compressors, such as zstd, shrink: to 'log2(alphabet_size)' bits
+///   per byte at best.
+///
+/// So 'repeat_pct' sets the savings of every compressor, and a smaller 'alphabet_size' adds savings
+/// for zstd only. 'repeat_pct = 0' with 'alphabet_size = 256' is as incompressible as 'blob'.
+#[rune::function]
+pub fn compressible_blob(
+    seed: i64,
+    len: usize,
+    repeat_pct: i64,
+    alphabet_size: i64,
+) -> VmResult<Vec<u8>> {
+    let (repeat_pct, alphabet_size) = vm_try!(check_compressible_args(
+        "compressible_blob",
+        repeat_pct,
+        alphabet_size,
+        256
+    ));
+    VmResult::Ok(compressible_blob_inner(
+        seed,
+        len,
+        repeat_pct,
+        alphabet_size,
+    ))
+}
+
+/// Generates a compressible string of given length, of the same characters as 'text'.
+/// Like 'compressible_blob', it is fully defined by its parameters, and 'seed' is used to seed
+/// the RNG.
+///
+/// The string is a series of 8..=64 characters segments:
+/// - with 'repeat_pct'% probability a segment repeats characters from at most 1 KiB back in the
+///   string, which LZ4, zstd and the other LZ77 based compressors shrink;
+/// - otherwise it holds literal characters, each one of 'alphabet_size' distinct values, which only
+///   the entropy coding compressors, such as zstd, shrink: to 'log2(alphabet_size)' bits per
+///   character at best.
+///
+/// 'alphabet_size' is in the 20..=90 range, up to the number of the 'text' characters.
+/// 'repeat_pct = 0' with 'alphabet_size = 90' compresses as much as 'text'.
+#[rune::function]
+pub fn compressible_text(
+    seed: i64,
+    len: usize,
+    repeat_pct: i64,
+    alphabet_size: i64,
+) -> VmResult<String> {
+    let (repeat_pct, alphabet_size) = vm_try!(check_compressible_args(
+        "compressible_text",
+        repeat_pct,
+        alphabet_size,
+        TEXT_CHARSET.len() as i64
+    ));
+    VmResult::Ok(compressible_text_inner(
+        seed,
+        len,
+        repeat_pct,
+        alphabet_size,
+    ))
+}
+
+fn check_compressible_args(
+    function: &str,
+    repeat_pct: i64,
+    alphabet_size: i64,
+    max_alphabet_size: i64,
+) -> Result<(u32, u32), VmError> {
+    if !(0..=100).contains(&repeat_pct) {
+        return Err(VmError::panic(format!(
+            "{function}: 'repeat_pct' must be in the 0..=100 range, got {repeat_pct}"
+        )));
+    }
+    if !(COMPRESSIBLE_MIN_ALPHABET_SIZE..=max_alphabet_size).contains(&alphabet_size) {
+        return Err(VmError::panic(format!(
+            "{function}: 'alphabet_size' must be in the \
+             {COMPRESSIBLE_MIN_ALPHABET_SIZE}..={max_alphabet_size} range, got {alphabet_size}"
+        )));
+    }
+    Ok((repeat_pct as u32, alphabet_size as u32))
+}
+
+fn compressible_blob_inner(seed: i64, len: usize, repeat_pct: u32, alphabet_size: u32) -> Vec<u8> {
+    // Spread the values of the alphabet over the whole byte range
+    compressible_bytes(seed, len, repeat_pct, alphabet_size, |v| {
+        (v * 256 / alphabet_size) as u8
+    })
+}
+
+fn compressible_text_inner(seed: i64, len: usize, repeat_pct: u32, alphabet_size: u32) -> String {
+    let charset_len = TEXT_CHARSET.len() as u32;
+    // Spread the values of the alphabet over the whole charset
+    let bytes = compressible_bytes(seed, len, repeat_pct, alphabet_size, |v| {
+        TEXT_CHARSET[(v * charset_len / alphabet_size) as usize]
+    });
+    String::from_utf8(bytes).expect("TEXT_CHARSET must hold ASCII characters only")
+}
+
+/// Generates the bytes of a compressible blob, see 'compressible_blob'.
+/// 'literal' maps a random value in the '0..alphabet_size' range to the byte of a literal.
+fn compressible_bytes(
+    seed: i64,
+    len: usize,
+    repeat_pct: u32,
+    alphabet_size: u32,
+    literal: impl Fn(u32) -> u8,
+) -> Vec<u8> {
+    let mut rng = SmallRng::seed_from_u64(seed as u64);
+    let mut result = Vec::with_capacity(len);
+    while result.len() < len {
+        let segment_len = rng
+            .random_range(COMPRESSIBLE_SEGMENT_LEN)
+            .min(len - result.len());
+        if !result.is_empty() && rng.random_range(0..100) < repeat_pct {
+            let max_distance = result.len().min(COMPRESSIBLE_MAX_DISTANCE);
+            let start = result.len() - rng.random_range(1..=max_distance);
+            // NOTE: copy byte by byte, the source may overlap the bytes being written
+            for k in 0..segment_len {
+                result.push(result[start + k]);
+            }
+        } else {
+            for _ in 0..segment_len {
+                result.push(literal(rng.random_range(0..alphabet_size)));
+            }
+        }
+    }
+    result
+}
+
+/// Characters of the strings generated by 'text' and 'compressible_text'
+const TEXT_CHARSET: &[u8] =
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:',.<>?/";
+
 /// Generates random string of given length.
 /// Parameter `seed` is used to seed
 /// the RNG.
 #[rune::function]
 pub fn text(seed: i64, len: usize) -> String {
-    let charset: Vec<char> = ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".to_owned()
-        + "0123456789!@#$%^&*()_+-=[]{}|;:',.<>?/")
-        .chars()
-        .collect();
     let mut rng = SmallRng::seed_from_u64(seed as u64);
     (0..len)
         .map(|_| {
-            let idx = rng.random_range(0..charset.len());
-            charset[idx]
+            let idx = rng.random_range(0..TEXT_CHARSET.len());
+            char::from(TEXT_CHARSET[idx])
         })
         .collect()
 }
@@ -539,6 +687,305 @@ mod test {
         let worker = original.clone().unwrap();
         assert!(reject_in_workload(&worker, "set_report_field").is_err());
         assert!(reject_in_workload(&worker, "declare_metric").is_err());
+    }
+
+    /// Generator of the bytes of a compressible value: 'compressible_blob_inner' or
+    /// 'compressible_text_bytes'
+    type CompressibleGenerator = fn(i64, usize, u32, u32) -> Vec<u8>;
+
+    fn compressible_text_bytes(
+        seed: i64,
+        len: usize,
+        repeat_pct: u32,
+        alphabet_size: u32,
+    ) -> Vec<u8> {
+        compressible_text_inner(seed, len, repeat_pct, alphabet_size).into_bytes()
+    }
+
+    /// Journey-like values of 1..=3 KiB from consecutive seeds, laid out back to back,
+    /// like the cells of consecutive rows in an sstable.
+    fn compressible_stream(
+        generate: CompressibleGenerator,
+        first_seed: i64,
+        total_len: usize,
+        repeat_pct: u32,
+        alphabet_size: u32,
+    ) -> Vec<u8> {
+        let mut stream = Vec::with_capacity(total_len + 3072);
+        let mut seed = first_seed;
+        while stream.len() < total_len {
+            let len = 1024 + (hash_inner(seed) % 2049) as usize;
+            stream.extend(generate(seed, len, repeat_pct, alphabet_size));
+            seed += 1;
+        }
+        stream
+    }
+
+    /// Savings, in percent, of compressing 'data' in the 4 KiB chunks ScyllaDB uses by default
+    fn chunked_savings_pct(data: &[u8], mut compress: impl FnMut(&[u8]) -> usize) -> f64 {
+        let compressed: usize = data.chunks(4096).map(&mut compress).sum();
+        100.0 * (1.0 - compressed as f64 / data.len() as f64)
+    }
+
+    /// Savings, in percent, of LZ4 and zstd level 3 on 1 MiB of compressible values
+    fn compressible_savings(
+        generate: CompressibleGenerator,
+        repeat_pct: u32,
+        alphabet_size: u32,
+    ) -> (f64, f64) {
+        let data = compressible_stream(generate, 0, 1 << 20, repeat_pct, alphabet_size);
+        let lz4 = chunked_savings_pct(&data, |c| lz4_flex::block::compress(c).len());
+        let zstd = chunked_savings_pct(&data, |c| zstd::bulk::compress(c, 3).unwrap().len());
+        (lz4, zstd)
+    }
+
+    /// Savings, in percent, of zstd level 3 on 1 MiB of compressible values, with a dictionary
+    /// trained on other values of the same parameters, like ScyllaDB's 'ZstdWithDictsCompressor'
+    fn compressible_savings_with_dict(
+        generate: CompressibleGenerator,
+        repeat_pct: u32,
+        alphabet_size: u32,
+    ) -> f64 {
+        let data = compressible_stream(generate, 0, 1 << 20, repeat_pct, alphabet_size);
+        let samples: Vec<Vec<u8>> =
+            compressible_stream(generate, 1_000_000, 1 << 20, repeat_pct, alphabet_size)
+                .chunks(4096)
+                .map(<[u8]>::to_vec)
+                .collect();
+        let dict = zstd::dict::from_samples(&samples, 64 * 1024).expect("failed to train");
+        let mut compressor = zstd::bulk::Compressor::with_dictionary(3, &dict).unwrap();
+        chunked_savings_pct(&data, |c| compressor.compress(c).unwrap().len())
+    }
+
+    /// Prints the savings of the compressors for a grid of the 'repeat_pct' and 'alphabet_size'
+    /// parameters, with the dictionary trained unless the data is random bytes
+    fn print_compressible_calibration_grid(
+        generate: CompressibleGenerator,
+        alphabet_sizes: &[u32],
+    ) {
+        println!("repeat_pct alphabet_size    lz4   zstd zstd+dict");
+        for repeat_pct in [0, 20, 40, 50, 60, 64, 70, 80] {
+            for &alphabet_size in alphabet_sizes {
+                let (lz4, zstd) = compressible_savings(generate, repeat_pct, alphabet_size);
+                // NOTE: there is nothing to train a dictionary on in random data
+                let zstd_dict = if repeat_pct == 0 && alphabet_size == 256 {
+                    zstd
+                } else {
+                    compressible_savings_with_dict(generate, repeat_pct, alphabet_size)
+                };
+                println!(
+                    "{repeat_pct:>10} {alphabet_size:>13} {lz4:>6.1} {zstd:>6.1} {zstd_dict:>9.1}"
+                );
+            }
+        }
+    }
+
+    /// Prints the savings of the compressors for a grid of the 'compressible_blob' parameters.
+    /// Run it to pick the parameters for a wanted compression ratio:
+    ///   cargo test compressible_blob_calibration_grid -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn compressible_blob_calibration_grid() {
+        print_compressible_calibration_grid(
+            compressible_blob_inner,
+            &[256, 128, 64, 48, 40, 32, 24, 20],
+        );
+    }
+
+    /// Prints the savings of the compressors for a grid of the 'compressible_text' parameters.
+    /// Run it to pick the parameters for a wanted compression ratio:
+    ///   cargo test compressible_text_calibration_grid -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn compressible_text_calibration_grid() {
+        print_compressible_calibration_grid(compressible_text_bytes, &[90, 64, 48, 40, 32, 24, 20]);
+    }
+
+    #[test]
+    fn compressible_blob_is_deterministic_and_of_given_length() {
+        for len in [0, 1, 7, 8, 65, 1000, 100_000] {
+            let a = compressible_blob_inner(42, len, 64, 40);
+            assert_eq!(len, a.len());
+            assert_eq!(a, compressible_blob_inner(42, len, 64, 40), "len {len}");
+        }
+        assert_ne!(
+            compressible_blob_inner(42, 1000, 64, 40),
+            compressible_blob_inner(43, 1000, 64, 40),
+        );
+    }
+
+    #[test]
+    fn compressible_text_is_deterministic_and_of_given_length() {
+        for len in [0, 1, 7, 8, 65, 1000, 100_000] {
+            let a = compressible_text_inner(42, len, 64, 40);
+            assert_eq!(len, a.len());
+            assert_eq!(a, compressible_text_inner(42, len, 64, 40), "len {len}");
+        }
+        assert_ne!(
+            compressible_text_inner(42, 1000, 64, 40),
+            compressible_text_inner(43, 1000, 64, 40),
+        );
+    }
+
+    #[test]
+    fn compressible_blob_literals_use_the_alphabet_only() {
+        for alphabet_size in [20, 40, 256] {
+            let values: std::collections::HashSet<u8> =
+                compressible_blob_inner(7, 100_000, 0, alphabet_size)
+                    .into_iter()
+                    .collect();
+            let expected: std::collections::HashSet<u8> = (0..alphabet_size)
+                .map(|v| (v * 256 / alphabet_size) as u8)
+                .collect();
+            assert_eq!(expected, values, "alphabet_size {alphabet_size}");
+        }
+    }
+
+    #[test]
+    fn compressible_text_literals_use_the_alphabet_only() {
+        for alphabet_size in [20, 40, 90] {
+            let values: std::collections::HashSet<u8> =
+                compressible_text_inner(7, 100_000, 0, alphabet_size)
+                    .into_bytes()
+                    .into_iter()
+                    .collect();
+            let expected: std::collections::HashSet<u8> = (0..alphabet_size)
+                .map(|v| TEXT_CHARSET[(v * TEXT_CHARSET.len() as u32 / alphabet_size) as usize])
+                .collect();
+            assert_eq!(expected, values, "alphabet_size {alphabet_size}");
+        }
+    }
+
+    #[test]
+    fn compressible_blob_without_repeats_with_full_alphabet_is_incompressible() {
+        let (lz4, zstd) = compressible_savings(compressible_blob_inner, 0, 256);
+        assert!(lz4 < 1.0, "lz4 saved {lz4:.1}%");
+        assert!(zstd < 1.0, "zstd saved {zstd:.1}%");
+    }
+
+    /// 'repeat_pct' must drive the savings of LZ4 and zstd alike, while 'alphabet_size' must add
+    /// savings for zstd only
+    #[test]
+    fn compressible_blob_parameters_split_lz4_and_zstd_savings() {
+        assert_parameters_split_lz4_and_zstd_savings(compressible_blob_inner, 256);
+    }
+
+    #[test]
+    fn compressible_text_parameters_split_lz4_and_zstd_savings() {
+        assert_parameters_split_lz4_and_zstd_savings(compressible_text_bytes, 90);
+    }
+
+    fn assert_parameters_split_lz4_and_zstd_savings(
+        generate: CompressibleGenerator,
+        full_alphabet_size: u32,
+    ) {
+        let (lz4_low_repeat, _) = compressible_savings(generate, 20, full_alphabet_size);
+        let (lz4_high_repeat, _) = compressible_savings(generate, 60, full_alphabet_size);
+        assert!(
+            lz4_high_repeat > lz4_low_repeat + 20.0,
+            "{lz4_low_repeat:.1}% -> {lz4_high_repeat:.1}%"
+        );
+
+        let min_alphabet_size = COMPRESSIBLE_MIN_ALPHABET_SIZE as u32;
+        for repeat_pct in [0, 20, 40, 60, 80] {
+            let (lz4_full, _) = compressible_savings(generate, repeat_pct, full_alphabet_size);
+            let (lz4_small, _) = compressible_savings(generate, repeat_pct, min_alphabet_size);
+            assert!(
+                (lz4_small - lz4_full).abs() < 1.0,
+                "lz4 at repeat_pct {repeat_pct}: {lz4_full:.1}% -> {lz4_small:.1}%"
+            );
+        }
+
+        let (_, zstd_full) = compressible_savings(generate, 60, full_alphabet_size);
+        let (_, zstd_small) = compressible_savings(generate, 60, min_alphabet_size);
+        assert!(
+            zstd_small > zstd_full + 10.0,
+            "zstd: {zstd_full:.1}% -> {zstd_small:.1}%"
+        );
+    }
+
+    /// Keeps the example of the README in sync with the generator
+    #[test]
+    fn compressible_blob_readme_example_savings() {
+        let (lz4, _) = compressible_savings(compressible_blob_inner, 64, 40);
+        let zstd_dict = compressible_savings_with_dict(compressible_blob_inner, 64, 40);
+        assert!((lz4 - 49.0).abs() < 1.5, "lz4 saved {lz4:.1}%");
+        assert!(
+            (zstd_dict - 65.0).abs() < 1.5,
+            "zstd with a dictionary saved {zstd_dict:.1}%"
+        );
+    }
+
+    /// Keeps the example of the README in sync with the generator
+    #[test]
+    fn compressible_text_readme_example_savings() {
+        let (lz4, _) = compressible_savings(compressible_text_bytes, 64, 40);
+        let zstd_dict = compressible_savings_with_dict(compressible_text_bytes, 64, 40);
+        assert!((lz4 - 49.0).abs() < 1.5, "lz4 saved {lz4:.1}%");
+        assert!(
+            (zstd_dict - 66.0).abs() < 1.5,
+            "zstd with a dictionary saved {zstd_dict:.1}%"
+        );
+    }
+
+    #[test]
+    fn compressible_args_are_validated() {
+        let check = |repeat_pct, alphabet_size, max_alphabet_size| {
+            check_compressible_args("f", repeat_pct, alphabet_size, max_alphabet_size)
+        };
+        assert!(check(0, 20, 256).is_ok());
+        assert!(check(100, 256, 256).is_ok());
+        assert!(check(-1, 40, 256).is_err());
+        assert!(check(101, 40, 256).is_err());
+        assert!(check(64, 0, 256).is_err());
+        assert!(check(64, 19, 256).is_err());
+        assert!(check(64, 19, 90).is_err());
+        assert!(check(64, 257, 256).is_err());
+        assert!(check(64, 90, 90).is_ok());
+        assert!(check(64, 91, 90).is_err());
+    }
+
+    /// Calls the given 'latte' module function from a rune script, the way workloads do
+    fn call_latte_function(function: &str, args: &str) -> Result<Value, VmError> {
+        let mut context = rune::Context::with_default_modules().unwrap();
+        crate::scripting::install(&mut context, HashMap::new());
+        let mut sources = rune::Sources::new();
+        let script = format!("pub fn main() {{ latte::{function}({args}) }}");
+        sources
+            .insert(rune::Source::memory(script).unwrap())
+            .unwrap();
+        let unit = rune::prepare(&mut sources)
+            .with_context(&context)
+            .build()
+            .unwrap();
+        let mut vm = rune::Vm::new(
+            std::sync::Arc::new(context.runtime().unwrap()),
+            std::sync::Arc::new(unit),
+        );
+        vm.call(["main"], ())
+    }
+
+    #[test]
+    fn compressible_blob_is_callable_from_rune() {
+        let call = |args| call_latte_function("compressible_blob", args);
+        let value = call("7, 1000, 64, 40").expect("failed to call");
+        let bytes: Vec<u8> = rune::from_value(value).expect("not a byte vector");
+        assert_eq!(compressible_blob_inner(7, 1000, 64, 40), bytes);
+
+        assert!(call("7, 1000, 101, 40").is_err());
+        assert!(call("7, 1000, 64, 19").is_err());
+    }
+
+    #[test]
+    fn compressible_text_is_callable_from_rune() {
+        let call = |args| call_latte_function("compressible_text", args);
+        let value = call("7, 1000, 64, 40").expect("failed to call");
+        let string: String = rune::from_value(value).expect("not a string");
+        assert_eq!(compressible_text_inner(7, 1000, 64, 40), string);
+
+        assert!(call("7, 1000, 101, 40").is_err());
+        assert!(call("7, 1000, 64, 19").is_err());
+        assert!(call("7, 1000, 64, 91").is_err());
     }
 
     #[test]

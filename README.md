@@ -393,14 +393,93 @@ are pure, i.e. invoking them multiple times with the same parameters yields alwa
 - `latte::hash_range(i, max)` – generates an integer value in range `0..max`
 - `latte::hash_select(i, vector)` – selects an item from a vector based on a hash
 - `latte::blob(i, len)` – generates a random binary blob of length `len`
+- `latte::compressible_blob(i, len, repeat_pct, alphabet_size)` – generates a binary blob of length `len`
+  that compresses as much as asked, see [Compressible blobs](#compressible-blobs)
 - `latte::normal(i, mean, std_dev)` – generates a floating point number from a normal distribution
 - `latte::normal_f32(i, mean, std_dev)` – generates a floating point 32bit number from a normal distribution
 - `latte::uniform(i, min, max)` – generates a floating point number from a uniform distribution
 - `latte::text(i, length)` – generates a random string
+- `latte::compressible_text(i, len, repeat_pct, alphabet_size)` – generates a string of length `len`
+  that compresses as much as asked, see [Compressible text](#compressible-text)
 - `latte::vector(length, function)` – generates a vector of given length with a function
   that takes an integer element index and generates an element
 - `latte::join(vector, separator)` – joins a collection of strings using a separator
 - `x.clamp(min, max)` – restricts the range of an integer or a float value to given range
+
+#### Compressible blobs
+
+No compressor can shrink the random bytes of `latte::blob`, while real data usually compresses well.
+`latte::compressible_blob(i, len, repeat_pct, alphabet_size)` generates blobs that compress about as much
+as asked. Each blob is a series of 8–64 bytes segments:
+
+- with `repeat_pct`% probability (`0..=100`) a segment repeats bytes from at most 1 KiB back in the
+  same blob. LZ4, zstd and the other LZ77 based compressors shrink such segments.
+- other segments hold literal bytes, each one of `alphabet_size` distinct values (`20..=256`).
+  Only the entropy coding compressors, such as zstd, shrink them: to `log2(alphabet_size)` bits per byte
+  at best.
+
+So `repeat_pct` sets the savings of every compressor, and a smaller `alphabet_size` adds savings for zstd
+only. `repeat_pct = 0` with `alphabet_size = 256` is as incompressible as `latte::blob`.
+`alphabet_size` starts at 20, because in the literals of smaller alphabets LZ4 finds chance matches,
+which would make its savings depend on `alphabet_size` too.
+
+```rust
+  let data = compressible_blob(idx, 2048, 64, 40);
+```
+
+The savings of compressing 1–3 KiB blobs in 4 KiB chunks, the ScyllaDB default.
+zstd uses level 3, and in the "zstd + dict" column also a 64 KiB dictionary trained on other blobs of
+the same parameters, similar to ScyllaDB's `ZstdWithDictsCompressor`:
+
+| `repeat_pct` | `alphabet_size` | LZ4 | zstd | zstd + dict |
+|---|---|---|---|---|
+| 0 | 256 | 0% | 0% | 0% |
+| 40 | 256 | 30% | 32% | 33% |
+| 64 | 256 | 49% | 52% | 53% |
+| 64 | 40 | 49% | 65% | 65% |
+| 64 | 20 | 49% | 70% | 71% |
+| 70 | 32 | 53% | 70% | 70% |
+
+The savings hold for values of 512 bytes and longer, of both `compressible_blob` and `compressible_text`.
+Shorter values save less, because their first segment is always literal and the other segments can
+only repeat bytes of the same value: with `repeat_pct = 64` LZ4 saves 45% at 256 bytes, 37% at 128
+and 19% at 64.
+
+The savings on a database are a bit lower, because the rows also hold keys, other columns and
+the storage format overhead, so check them on the target database.
+To print the savings of other parameters, run:
+
+```shell
+cargo test compressible_blob_calibration_grid -- --ignored --nocapture
+```
+
+#### Compressible text
+
+`latte::compressible_text(i, len, repeat_pct, alphabet_size)` is the string counterpart of
+`latte::compressible_blob`, for the `text` columns. It builds the string of the same segments, but its
+literals are `alphabet_size` distinct characters (`20..=90`) of the `latte::text` ones.
+So even with `repeat_pct = 0` and `alphabet_size = 90` zstd shrinks it, as much as `latte::text`.
+
+```rust
+  let data = compressible_text(idx, 2048, 64, 40);
+```
+
+The savings, measured the same way as for the compressible blobs:
+
+| `repeat_pct` | `alphabet_size` | LZ4 | zstd | zstd + dict |
+|---|---|---|---|---|
+| 0 | 90 | 0% | 17% | 17% |
+| 40 | 90 | 30% | 43% | 44% |
+| 64 | 90 | 49% | 59% | 60% |
+| 64 | 40 | 49% | 65% | 66% |
+| 64 | 20 | 49% | 70% | 71% |
+| 70 | 32 | 53% | 70% | 70% |
+
+To print the savings of other parameters, run:
+
+```shell
+cargo test compressible_text_calibration_grid -- --ignored --nocapture
+```
 
 #### Type conversions
 
