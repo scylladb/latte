@@ -174,6 +174,8 @@ pub struct ConnectionConf {
     #[clap(long("page-size"), default_value = "501", value_name = "COUNT")]
     pub page_size: NonZeroUsize,
 
+    /// Number of retries after the first failed attempt of a query (and of a whole cycle
+    /// with `--validation-strategy=retry`). 0 sends each query once.
     #[clap(
         long("retry-number"),
         aliases = &["retries"],

@@ -465,7 +465,8 @@ impl Workload {
         let mut end_time = Instant::now();
         let mut is_ok = false;
         let retry_number = self.context.retry_number;
-        while current_retries_counter < retry_number {
+        // `retry_number` counts retries after the first attempt, like the per-query loops in scripting/*.
+        while current_retries_counter <= retry_number {
             let current_err: DbError;
             // NOTE: Create a separate scope inside of the loop
             //       to be able to run additional retry-related async context functions.
