@@ -60,7 +60,7 @@ thiserror = "2.0.0"
 # NOTE: Using tokio_unstable + enable_alt_timer() to work around the timer performance
 #       regression in 1.45+. See: https://github.com/tokio-rs/tokio/issues/7744
 #       Alt timer PR: https://github.com/tokio-rs/tokio/pull/7467
-tokio = { version = "1.52.1", features = ["rt", "rt-multi-thread", "time", "parking_lot", "signal"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "time", "parking_lot", "signal"] }
 tokio-stream = "0.1"
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -83,7 +83,7 @@ cargo-lock = "11.0.0"
 assert_approx_eq = "1"
 tempfile = "3"
 rstest = "0.22"
-tokio = { version = "1.52.1", features = ["rt", "test-util", "macros"] }
+tokio = { version = "1.54.1", features = ["rt", "test-util", "macros"] }
 testcontainers = "0.27"
 
 [features]
